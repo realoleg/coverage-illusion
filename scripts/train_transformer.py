@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -74,6 +75,10 @@ def main() -> None:
     train_result = trainer.train()
     trainer.save_model()
     trainer.save_state()
+
+    # Final model is saved in checkpoint_dir, intermediate epoch checkpoints are not needed.
+    for epoch_checkpoint in checkpoint_dir.glob("checkpoint-*"):
+        shutil.rmtree(epoch_checkpoint)
 
     save_training_metrics(
         metrics=train_result.metrics,
