@@ -109,7 +109,7 @@ def figure_style():
         plt.rcParams.update(original)
 
 
-def save_figure_bundle(fig, output_path: str | Path) -> None:
+def save_figure(fig, output_path: str | Path) -> None:
     output_path = Path(output_path)
     ensure_parent_dir(output_path)
 
@@ -186,7 +186,7 @@ def plot_clean_model_comparison(
         add_bar_value_labels(ax, values)
 
         fig.tight_layout()
-        save_figure_bundle(fig, output_path)
+        save_figure(fig, output_path)
         plt.close(fig)
 
 
@@ -226,14 +226,17 @@ def plot_stress_classification_performance(
         style_legend(ax)
 
         fig.tight_layout()
-        save_figure_bundle(fig, output_path)
+        save_figure(fig, output_path)
         plt.close(fig)
 
 
-def plot_conformal_set_size_under_stress(
+def plot_conformal_metric_under_stress(
     conformal_metrics_df: pd.DataFrame,
     output_path: str | Path,
-    alpha: float,
+    metric_col: str,
+    ylabel: str,
+    title: str,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     plot_df = conformal_metrics_df.copy()
 
@@ -251,7 +254,7 @@ def plot_conformal_set_size_under_stress(
             subset = sort_by_stress_test_order(subset)
 
             x = [prettify_stress_test_name(xi) for xi in subset["stress_test"]]
-            y = subset["avg_set_size"].tolist()
+            y = subset[metric_col].tolist()
 
             ax.plot(
                 x,
@@ -263,58 +266,14 @@ def plot_conformal_set_size_under_stress(
                 color=alpha_colors.get(alpha_value, GREY),
             )
 
-        ax.set_ylabel("average set size")
-        ax.set_title("Conformal set size under degraded input", pad=10)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, pad=10)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
         ax.tick_params(axis="x", rotation=22)
         apply_common_axis_format(ax)
         style_legend(ax)
 
         fig.tight_layout()
-        save_figure_bundle(fig, output_path)
+        save_figure(fig, output_path)
         plt.close(fig)
-
-
-def plot_conformal_singleton_rate_under_stress(
-    conformal_metrics_df: pd.DataFrame,
-    output_path: str | Path,
-    alpha: float,
-) -> None:
-    plot_df = conformal_metrics_df.copy()
-
-    alpha_values = sorted(plot_df["alpha"].unique(), reverse=True)
-    alpha_colors = {
-        0.10: TEAL,
-        0.05: PURPLE,
-    }
-
-    with figure_style():
-        fig, ax = plt.subplots()
-
-        for alpha_value in alpha_values:
-            subset = plot_df[plot_df["alpha"] == alpha_value].copy()
-            subset = sort_by_stress_test_order(subset)
-
-            x = [prettify_stress_test_name(xi) for xi in subset["stress_test"]]
-            y = subset["singleton_rate"].tolist()
-
-            ax.plot(
-                x,
-                y,
-                marker="o",
-                markersize=7,
-                linewidth=2.4,
-                label=f"alpha={alpha_value:.2f}",
-                color=alpha_colors.get(alpha_value, GREY),
-            )
-
-        ax.set_ylabel("singleton rate")
-        ax.set_title("Conformal singleton rate under degraded input", pad=10)
-        ax.set_ylim(0.0, 1.0)
-        ax.tick_params(axis="x", rotation=22)
-        apply_common_axis_format(ax)
-        style_legend(ax)
-
-        fig.tight_layout()
-        save_figure_bundle(fig, output_path)
-        plt.close(fig)
-

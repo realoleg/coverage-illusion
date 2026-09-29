@@ -1,31 +1,15 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src.plots import (
     plot_clean_model_comparison,
-    plot_conformal_set_size_under_stress,
-    plot_conformal_singleton_rate_under_stress,
+    plot_conformal_metric_under_stress,
     plot_stress_classification_performance,
 )
-from src.utils import load_yaml_config, resolve_metric_column
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Create final tables and figures for the mini-project report."
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/base.yaml",
-        help="Path to YAML config.",
-    )
-    return parser.parse_args()
+from src.utils import resolve_metric_column
 
 
 def load_required_table(path: str | Path) -> pd.DataFrame:
@@ -113,12 +97,6 @@ def build_conformal_test_table(
 
 
 def main() -> None:
-    args = parse_args()
-    config = load_yaml_config(args.config)
-
-    alpha_values = [float(alpha) for alpha in config["conformal"]["alpha_values"]]
-    primary_alpha = alpha_values[0]
-
     tables_dir = Path("results/tables")
     figures_dir = Path("results/figures")
     tables_dir.mkdir(parents=True, exist_ok=True)
@@ -169,16 +147,21 @@ def main() -> None:
         metric_name="macro_f1",
     )
 
-    plot_conformal_set_size_under_stress(
+    plot_conformal_metric_under_stress(
         conformal_metrics_df=stress_conformal_df,
         output_path=conformal_set_size_fig_path,
-        alpha=primary_alpha,
+        metric_col="avg_set_size",
+        ylabel="average set size",
+        title="Conformal set size under degraded input",
     )
 
-    plot_conformal_singleton_rate_under_stress(
+    plot_conformal_metric_under_stress(
         conformal_metrics_df=stress_conformal_df,
         output_path=conformal_singleton_fig_path,
-        alpha=primary_alpha,
+        metric_col="singleton_rate",
+        ylabel="singleton rate",
+        title="Conformal singleton rate under degraded input",
+        ylim=(0.0, 1.0),
     )
 
     print("Saved final clean performance table to:", clean_table_path.resolve())
