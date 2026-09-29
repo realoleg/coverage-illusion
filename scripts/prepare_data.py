@@ -1,7 +1,7 @@
 from __future__ import annotations
-from pathlib import Path
 
-import yaml
+import argparse
+from pathlib import Path
 
 from src.data import (
     keep_required_columns,
@@ -13,8 +13,20 @@ from src.data import (
 from src.utils import load_yaml_config, add_text_length_features
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download Dreaddit and build processed splits.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/base.yaml",
+        help="Path to YAML config.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    config = load_yaml_config()
+    args = parse_args()
+    config = load_yaml_config(args.config)
 
     seed = config["seed"]
     calibration_size = config["data"]["calibration_size"]
@@ -41,9 +53,9 @@ def main() -> None:
 
     save_splits(processed_splits, output_dir=output_dir)
 
-    print ("Processed splits saved to... ", Path(output_dir).resolve())
+    print("Processed splits saved to... ", Path(output_dir).resolve())
     for split_name, df in processed_splits.items():
-        print (summarize_split(df, split_name))
+        print(summarize_split(df, split_name))
 
 
 
