@@ -53,27 +53,6 @@ def load_processed_split(
     return out
 
 
-def resolve_metric_column(df: pd.DataFrame, preferred: str = "macro_f1") -> str:
-
-    """
-    Resolve a metric column name robustly in case of small naming diffferences.
-    """
-
-    candidates = [
-        preferred,
-        preferred.replace("_", " "),
-        preferred.replace(" ", "_"),
-        "f1",
-        "accuracy",
-    ]
-    
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    
-    raise ValueError(f"Could not resolve metric column. Available columns: {df.columns.tolist()}")
-
-
 def add_text_length_features(
         df: pd.DataFrame,
         text_column: str = "text",

@@ -9,7 +9,6 @@ from src.plots import (
     plot_conformal_metric_under_stress,
     plot_stress_classification_performance,
 )
-from src.utils import resolve_metric_column
 
 
 def load_required_table(path: str | Path) -> pd.DataFrame:
@@ -32,8 +31,7 @@ def build_clean_performance_table(
 
     out = pd.concat([baseline_test, transformer_test], ignore_index=True)
 
-    metric_col = resolve_metric_column(out, preferred="macro_f1")
-    out = out.sort_values(metric_col, ascending=False).reset_index(drop=True)
+    out = out.sort_values("macro_f1", ascending=False).reset_index(drop=True)
 
     keep_cols = [
         "model_name",
@@ -43,10 +41,8 @@ def build_clean_performance_table(
         "precision",
         "recall",
         "f1",
-        metric_col,
+        "macro_f1",
     ]
-    keep_cols = [col for col in keep_cols if col in out.columns]
-
     return out[keep_cols].copy()
 
 
@@ -56,8 +52,6 @@ def build_stress_classification_table(
     """
     Keep only the columns we need for the main stress-test classification table.
     """
-    metric_col = resolve_metric_column(stress_classification_df, preferred="macro_f1")
-
     keep_cols = [
         "stress_test",
         "model_name",
@@ -66,10 +60,8 @@ def build_stress_classification_table(
         "precision",
         "recall",
         "f1",
-        metric_col,
+        "macro_f1",
     ]
-    keep_cols = [col for col in keep_cols if col in stress_classification_df.columns]
-
     out = stress_classification_df[keep_cols].copy()
     return out.reset_index(drop=True)
 
@@ -90,8 +82,6 @@ def build_conformal_test_table(
         "empty_rate",
         "full_set_rate",
     ]
-    keep_cols = [col for col in keep_cols if col in stress_conformal_df.columns]
-
     out = stress_conformal_df[keep_cols].copy()
     return out.reset_index(drop=True)
 

@@ -23,7 +23,7 @@ from src.conformal import (
 )
 from src.evaluate import build_metrics_row, build_prediction_frame
 from src.transformer import predict_on_split, tokenize_dataframe
-from src.utils import resolve_metric_column, add_text_length_features
+from src.utils import add_text_length_features
 
 
 def select_best_baseline_model_name(metrics_path: str | Path) -> str:
@@ -42,8 +42,7 @@ def select_best_baseline_model_name(metrics_path: str | Path) -> str:
     if validation_df.empty:
         raise ValueError("No validation rows found in baseline metrics file.")
 
-    metric_column = resolve_metric_column(validation_df, preferred="macro_f1")
-    best_row = validation_df.sort_values(metric_column, ascending=False).iloc[0]
+    best_row = validation_df.sort_values("macro_f1", ascending=False).iloc[0]
 
     return str(best_row["model_name"])
 

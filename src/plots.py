@@ -6,8 +6,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from src.utils import resolve_metric_column
-
 
 STRESS_TEST_ORDER = [
     "clean",
@@ -164,21 +162,20 @@ def plot_clean_model_comparison(
     output_path: str | Path,
     metric_name: str = "macro_f1",
 ) -> None:
-    metric_col = resolve_metric_column(clean_metrics_df, preferred=metric_name)
     plot_df = clean_metrics_df.copy()
     plot_df["model_label"] = plot_df["model_name"].map(prettify_model_name)
     plot_df["color"] = plot_df["model_name"].map(MODEL_COLORS).fillna(GREY)
-    plot_df = plot_df.sort_values(metric_col, ascending=False).reset_index(drop=True)
+    plot_df = plot_df.sort_values(metric_name, ascending=False).reset_index(drop=True)
 
     with figure_style():
         fig, ax = plt.subplots()
 
-        values = plot_df[metric_col].tolist()
+        values = plot_df[metric_name].tolist()
         colors = plot_df["color"].tolist()
         labels = plot_df["model_label"].tolist()
 
         ax.bar(labels, values, color=colors, edgecolor=DARK_GREY, linewidth=0.8)
-        ax.set_ylabel(metric_col.replace("_", " "))
+        ax.set_ylabel(metric_name.replace("_", " "))
         ax.set_title("Clean test performance by model", pad=10)
         ax.set_ylim(0.0, 1.0)
         ax.tick_params(axis="x", rotation=18)
@@ -195,7 +192,6 @@ def plot_stress_classification_performance(
     output_path: str | Path,
     metric_name: str = "macro_f1",
 ) -> None:
-    metric_col = resolve_metric_column(stress_metrics_df, preferred=metric_name)
     plot_df = sort_by_stress_test_order(stress_metrics_df)
 
     with figure_style():
@@ -206,7 +202,7 @@ def plot_stress_classification_performance(
             subset = sort_by_stress_test_order(subset)
 
             x = [prettify_stress_test_name(xi) for xi in subset["stress_test"]]
-            y = subset[metric_col].tolist()
+            y = subset[metric_name].tolist()
 
             ax.plot(
                 x,
@@ -218,7 +214,7 @@ def plot_stress_classification_performance(
                 color=MODEL_COLORS.get(model_name, GREY),
             )
 
-        ax.set_ylabel(metric_col.replace("_", " "))
+        ax.set_ylabel(metric_name.replace("_", " "))
         ax.set_title("Classification performance under degraded input", pad=10)
         ax.set_ylim(0.0, 1.0)
         ax.tick_params(axis="x", rotation=22)
