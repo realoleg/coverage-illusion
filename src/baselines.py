@@ -9,17 +9,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 
-from src.evaluate import build_metrics_row
-from src.utils import load_processed_split
-
-REQUIRED_COLUMNS = ["text", "label"]
+from src.evaluate import build_metrics_row, build_prediction_frame
 
 
 def build_baseline_models(
         max_features: int = 20000,
         ngram_range: tuple[int, int] = (1,2),
 ) -> dict[str, Pipeline]:
-    
+
     """
     Create two baseline pipelines (tfidf+logreg; tfidf+linearSVM).
     """
@@ -93,17 +90,13 @@ def evaluate_models_on_split(
     x = df["text"].tolist()
     y = df["label"].to_numpy()
 
-    metrics_row: list[dict] = []
+    metrics_rows: list[dict] = []
     prediction_frames: list[pd.DataFrame] = []
 
-    base_columns = ["example_id", "text", "label"]
-    if "subreddit" in df.columns:
-        base_columns.append("subreddit")
-    
     for model_name, model in models.items():
         y_pred = model.predict(x).astype(int)
 
-        metrics_row.append(
+        metrics_rows.append(
             build_metrics_row(
                 model_name=model_name,
                 split_name=split_name,
@@ -111,16 +104,16 @@ def evaluate_models_on_split(
                 y_pred=y_pred,
             )
         )
-
-        pred_df = df[base_columns].copy()
-        pred_df["split"] = split_name
-        pred_df["model_name"] = model_name
-        pred_df["pred_label"] = y_pred
-        pred_df["correct"] = (pred_df["label"] == pred_df["pred_label"]).astype(int)
-
-        prediction_frames.append(pred_df)
+        prediction_frames.append(
+            build_prediction_frame(
+                df=df,
+                split_name=split_name,
+                model_name=model_name,
+                pred_labels=y_pred,
+            )
+        )
     
-    metrics_df = pd.DataFrame(metrics_row)
+    metrics_df = pd.DataFrame(metrics_rows)
     predictions_df = pd.concat(prediction_frames, ignore_index=True)
 
     return metrics_df, predictions_df

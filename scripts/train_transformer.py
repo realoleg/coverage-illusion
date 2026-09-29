@@ -45,7 +45,7 @@ def main() -> None:
     initialise_seed(seed)
 
     split_to_df = load_transformer_splits(data_dir=data_dir)
-    _, tokenized_splits = build_tokenized_splits(
+    tokenizer, tokenized_splits = build_tokenized_splits(
         split_to_df=split_to_df,
         model_name=model_name,
         max_length=max_length,
@@ -59,8 +59,9 @@ def main() -> None:
     tables_dir.mkdir(parents=True, exist_ok=True)
     prediciton_dir.mkdir(parents=True, exist_ok=True)
 
-    trainer, _ = build_trainer(
+    trainer = build_trainer(
         model_name=model_name,
+        tokenizer=tokenizer,
         output_dir=checkpoint_dir,
         train_dataset=tokenized_splits["train"],
         eval_dataset=tokenized_splits["validation"],

@@ -10,10 +10,9 @@ from src.baselines import(
     build_baseline_models,
     evaluate_models_on_split,
     fit_models,
-    load_processed_split,
     save_models,
 )
-from src.utils import load_yaml_config
+from src.utils import load_processed_split, load_yaml_config
 
 
 def parse_args() -> argparse.Namespace:

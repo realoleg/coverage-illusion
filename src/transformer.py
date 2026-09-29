@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,12 @@ from transformers import (
     set_seed,
 )
 
-from src.evaluate import build_metrics_row, compute_classification_metrics
+from src.evaluate import (
+    build_metrics_row,
+    build_prediction_frame,
+    compute_classification_metrics,
+)
 from src.utils import load_processed_split
-
-REQUIRED_COLUMNS = ["text", "label"]
 
 
 def load_transformer_splits(data_dir: str | Path) -> dict[str, pd.DataFrame]:
@@ -51,6 +54,32 @@ def get_label_mappings() -> tuple[dict[str, int], dict[int, str]]:
     return label2id, id2label
 
 
+def tokenize_dataframe(
+        df: pd.DataFrame,
+        tokenizer,
+        max_length: int,
+        desc: str,
+) -> Dataset:
+    
+    """
+    Convert a DataFrame into a tokenized Hugging Face dataset.
+    """
+
+    dataset = Dataset.from_pandas(df, preserve_index=False)
+
+    if "label" in dataset.column_names:
+        dataset = dataset.rename_column("label", "labels")
+
+    def tokenize_batch(batch: dict[str, list]) -> dict[str, Any]:
+        return tokenizer(
+            batch["text"],
+            truncation=True,
+            max_length=max_length,
+        )
+
+    return dataset.map(tokenize_batch, batched=True, desc=desc)
+
+
 def build_tokenized_splits(
         split_to_df: dict[str, pd.DataFrame],
         model_name: str,
@@ -62,27 +91,15 @@ def build_tokenized_splits(
     """
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    tokenized_splits: dict[str, Dataset] = {}
-
-    def tokenize_batch(batch: dict[str, list]) -> dict[str, Any]:
-        return tokenizer(
-            batch["text"],
-            truncation=True,
+    tokenized_splits = {
+        split_name: tokenize_dataframe(
+            df=df,
+            tokenizer=tokenizer,
             max_length=max_length,
-        )
-    
-    for split_name, df in split_to_df.items():
-        dataset = Dataset.from_pandas(df, preserve_index=False)
-
-        if "label" in dataset.column_names:
-            dataset = dataset.rename_column("label", "labels")
-
-        dataset = dataset.map(
-            tokenize_batch,
-            batched=True,
             desc=f"Tokenizing {split_name}",
         )
-        tokenized_splits[split_name] = dataset
+        for split_name, df in split_to_df.items()
+    }
 
     return tokenizer, tokenized_splits
 
@@ -100,6 +117,7 @@ def compute_trainer_metrics(eval_pred) -> dict[str, float]:
 
 def build_trainer(
         model_name: str,
+        tokenizer,
         output_dir: str | Path,
         train_dataset: Dataset,
         eval_dataset: Dataset,
@@ -108,7 +126,7 @@ def build_trainer(
         num_train_epochs: int,
         weight_decay: float,
         seed: int,
-) -> tuple[Trainer, Any]:
+) -> Trainer:
     
     """
     Create the model, tokenizer-related collation, training arguments, and trainer.
@@ -116,7 +134,6 @@ def build_trainer(
 
     label2id, id2label = get_label_mappings()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         num_labels=2,
@@ -154,52 +171,7 @@ def build_trainer(
         compute_metrics=compute_trainer_metrics,
     )
 
-    return trainer, tokenizer
-
-
-def stable_softmax(logits: np.ndarray) -> np.ndarray:
-
-    """
-    Numerically stable softmax for turning logits into probabilities.
-    """
-
-    shifted = logits - np.max(logits, axis=1, keepdims=True)
-    exp_values = np.exp(shifted)
-    return exp_values / np.sum(exp_values, axis=1, keepdims=True)
-
-
-def build_prediciton_frame(
-        df: pd.DataFrame,
-        logits: np.ndarray,
-        split_name: str,
-        model_name: str,
-) -> pd.DataFrame:
-    
-    """
-    Build a tidy prediciton table with logits, probabilities, and hard predicitons.
-    """
-
-    probabilities = stable_softmax(logits)
-    pred_labels = np.argmax(probabilities, axis=1).astype(int)
-
-    base_columns = ["example_id", "text", "label"]
-    optional_columns = ["subreddit", "text_length_chars", "text_length_words"]
-
-    for col in optional_columns:
-        if col in df.columns:
-            base_columns.append(col)
-
-    out = df[base_columns].copy()
-    out["split"] = split_name
-    out["model_name"] = model_name
-    out["pred_label"] = pred_labels
-    out["prob_not_stress"] = probabilities[:, 0]
-    out["prob_stress"] = probabilities[:, 1]
-    out["logit_not_stress"] = logits[:, 0]
-    out["logit_stress"] = logits[:, 1]
-    out["correct"] = (out["label"] == out["pred_label"]).astype(int)
-
-    return out
+    return trainer
 
 
 def predict_on_split(
@@ -208,6 +180,7 @@ def predict_on_split(
         original_df: pd.DataFrame,
         split_name: str,
         model_name: str,
+        stress_test_name: str | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     
     """
@@ -224,11 +197,16 @@ def predict_on_split(
         y_true=original_df["label"].to_numpy(),
         y_pred=pred_labels,
     )
-    predictions_df = build_prediciton_frame(
+    if stress_test_name is not None:
+        metrics_row["stress_test"] = stress_test_name
+
+    predictions_df = build_prediction_frame(
         df=original_df,
-        logits=logits,
         split_name=split_name,
         model_name=model_name,
+        pred_labels=pred_labels,
+        logits=logits,
+        stress_test_name=stress_test_name,
     )
 
     return metrics_row, predictions_df
@@ -239,8 +217,6 @@ def save_training_metrics(metrics: dict[str, Any], output_path: str | Path) -> N
     """
     Save training metrics to JSON.
     """
-
-    import json
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

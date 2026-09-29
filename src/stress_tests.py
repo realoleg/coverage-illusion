@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -22,8 +21,8 @@ from src.conformal import (
     load_transformer_predictions,
     summarize_conformal_predictions,
 )
-from src.evaluate import build_metrics_row
-from src.transformer import load_processed_split, stable_softmax
+from src.evaluate import build_metrics_row, build_prediction_frame
+from src.transformer import predict_on_split, tokenize_dataframe
 from src.utils import resolve_metric_column, add_text_length_features
 
 
@@ -149,50 +148,6 @@ def build_stress_test_splits(
     return variants
 
 
-def build_point_prediction_frame(
-    df: pd.DataFrame,
-    model_name: str,
-    split_name: str,
-    stress_test_name: str,
-    pred_labels: np.ndarray,
-    probabilities: np.ndarray | None = None,
-    logits: np.ndarray | None = None,
-) -> pd.DataFrame:
-    
-    """
-    Build a tidy prediction table for baseline or transformer point predictions.
-    """
-
-    base_columns = ["example_id", "text", "label"]
-    optional_columns = [
-        "original_text",
-        "subreddit",
-        "text_length_chars",
-        "text_length_words",
-    ]
-
-    for col in optional_columns:
-        if col in df.columns:
-            base_columns.append(col)
-
-    out = df[base_columns].copy()
-    out["split"] = split_name
-    out["stress_test"] = stress_test_name
-    out["model_name"] = model_name
-    out["pred_label"] = pred_labels.astype(int)
-    out["correct"] = (out["label"] == out["pred_label"]).astype(int)
-
-    if probabilities is not None:
-        out["prob_not_stress"] = probabilities[:, 0]
-        out["prob_stress"] = probabilities[:, 1]
-
-    if logits is not None:
-        out["logit_not_stress"] = logits[:, 0]
-        out["logit_stress"] = logits[:, 1]
-
-    return out
-
-
 def predict_with_baseline(
     model,
     df: pd.DataFrame,
@@ -216,12 +171,12 @@ def predict_with_baseline(
     )
     metrics_row["stress_test"] = stress_test_name
 
-    predictions_df = build_point_prediction_frame(
+    predictions_df = build_prediction_frame(
         df=df,
-        model_name=model_name,
         split_name="test",
-        stress_test_name=stress_test_name,
+        model_name=model_name,
         pred_labels=y_pred,
+        stress_test_name=stress_test_name,
     )
 
     return metrics_row, predictions_df
@@ -249,35 +204,6 @@ def load_saved_transformer(
         tokenizer = AutoTokenizer.from_pretrained(fallback_model_name, use_fast=True)
 
     return model, tokenizer
-
-
-def build_tokenized_inference_dataset(
-    df: pd.DataFrame,
-    tokenizer,
-    max_length: int,
-) -> Dataset:
-    
-    """
-    Convert a pandas DataFrame into a tokenized Hugging Face Dataset for inference.
-    """
-
-    dataset = Dataset.from_pandas(df, preserve_index=False)
-    dataset = dataset.rename_column("label", "labels")
-
-    def tokenize_batch(batch: dict[str, list]) -> dict[str, Any]:
-        return tokenizer(
-            batch["text"],
-            truncation=True,
-            max_length=max_length,
-        )
-
-    dataset = dataset.map(
-        tokenize_batch,
-        batched=True,
-        desc="Tokenizing stress-test split",
-    )
-
-    return dataset
 
 
 def build_inference_trainer(
@@ -320,36 +246,21 @@ def predict_with_transformer(
     Run the saved transformer checkpoint on one stress-test split.
     """
 
-    dataset = build_tokenized_inference_dataset(
+    dataset = tokenize_dataframe(
         df=df,
         tokenizer=tokenizer,
         max_length=max_length,
+        desc="Tokenizing stress-test split",
     )
 
-    prediction_output = trainer.predict(dataset)
-    logits = np.asarray(prediction_output.predictions)
-    probabilities = stable_softmax(logits)
-    pred_labels = np.argmax(probabilities, axis=1).astype(int)
-
-    metrics_row = build_metrics_row(
-        model_name=model_name,
+    return predict_on_split(
+        trainer=trainer,
+        dataset=dataset,
+        original_df=df,
         split_name="test",
-        y_true=df["label"].to_numpy(dtype=int),
-        y_pred=pred_labels,
-    )
-    metrics_row["stress_test"] = stress_test_name
-
-    predictions_df = build_point_prediction_frame(
-        df=df,
         model_name=model_name,
-        split_name="test",
         stress_test_name=stress_test_name,
-        pred_labels=pred_labels,
-        probabilities=probabilities,
-        logits=logits,
     )
-
-    return metrics_row, predictions_df
 
 
 def build_conformal_metrics_and_predictions(
