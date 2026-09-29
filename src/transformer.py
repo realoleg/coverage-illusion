@@ -183,7 +183,7 @@ def build_prediciton_frame(
     pred_labels = np.argmax(probabilities, axis=1).astype(int)
 
     base_columns = ["example_id", "text", "label"]
-    optional_columns = ["subreddit", "text_lenght_chars", "text_lenght_words"]
+    optional_columns = ["subreddit", "text_length_chars", "text_length_words"]
 
     for col in optional_columns:
         if col in df.columns:
