@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src.transformer import (
     build_tokenized_splits,
@@ -53,11 +52,11 @@ def main() -> None:
 
     checkpoint_dir = Path("results/checkpoints/distilbert")
     tables_dir = Path("results/tables")
-    prediciton_dir = Path("results/predictions")
+    predictions_dir = Path("results/predictions")
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     tables_dir.mkdir(parents=True, exist_ok=True)
-    prediciton_dir.mkdir(parents=True, exist_ok=True)
+    predictions_dir.mkdir(parents=True, exist_ok=True)
 
     trainer = build_trainer(
         model_name=model_name,
@@ -86,7 +85,7 @@ def main() -> None:
 
     for split_name in ["validation", "calibration", "test"]:
         metrics_row, predictions_df = predict_on_split(
-            trainer = trainer,
+            trainer=trainer,
             dataset=tokenized_splits[split_name],
             original_df=split_to_df[split_name],
             split_name=split_name,
@@ -96,21 +95,21 @@ def main() -> None:
         prediction_frames.append(predictions_df)
     
     metrics_out = pd.DataFrame(metrics_rows)
-    predicitons_out = pd.concat(prediction_frames, ignore_index=True)
+    predictions_out = pd.concat(prediction_frames, ignore_index=True)
 
     metrics_path = tables_dir / "transformer_metrics.csv"
-    predicitons_path = prediciton_dir / "transformer_predictions.csv"
+    predictions_path = predictions_dir / "transformer_predictions.csv"
 
     metrics_out.to_csv(metrics_path, index=False)
-    predicitons_out.to_csv(predicitons_path, index=False)
+    predictions_out.to_csv(predictions_path, index=False)
 
-    print ("Saved checkpoint to: ", checkpoint_dir.resolve())
-    print ("Saved training metrics to: ", (checkpoint_dir / "train_metrics.json").resolve())
-    print ("Saved evaluation metrics to: ", metrics_path.resolve())
-    print ("Saved predicitons to: ", predicitons_path.resolve())
+    print("Saved checkpoint to: ", checkpoint_dir.resolve())
+    print("Saved training metrics to: ", (checkpoint_dir / "train_metrics.json").resolve())
+    print("Saved evaluation metrics to: ", metrics_path.resolve())
+    print("Saved predictions to: ", predictions_path.resolve())
 
-    print ("\nTransformer summary: ")
-    print (metrics_out.sort_values("macro_f1", ascending=False).to_string(index=False))
+    print("\nTransformer summary: ")
+    print(metrics_out.sort_values("macro_f1", ascending=False).to_string(index=False))
 
 
 if __name__ == "__main__":

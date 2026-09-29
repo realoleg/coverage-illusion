@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src.conformal import (
     build_conformal_prediction_frame,

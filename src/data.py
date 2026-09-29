@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 
-import pandas as pd 
+import pandas as pd
 from datasets import load_dataset
 from sklearn.model_selection import train_test_split
-from src.utils import add_text_length_features
 
 REQUIRED_COLUMNS = ["text", "label", "subreddit"]
 
 
-def load_dreaddit_dataset(dataset_name: str) -> Dict[str, pd.DataFrame]:
+def load_dreaddit_dataset(dataset_name: str) -> dict[str, pd.DataFrame]:
     dataset = load_dataset(dataset_name)
 
     splits = {}
@@ -49,7 +47,7 @@ def make_train_calibration_split(
     return proper_train.reset_index(drop=True), calibration.reset_index(drop=True)
 
 
-def save_splits(splits: Dict[str, pd.DataFrame], output_dir: str | Path) -> None:
+def save_splits(splits: dict[str, pd.DataFrame], output_dir: str | Path) -> None:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 

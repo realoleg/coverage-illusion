@@ -4,7 +4,6 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src.stress_tests import (
     build_conformal_metrics_and_predictions,
@@ -17,8 +16,7 @@ from src.stress_tests import (
     predict_with_transformer,
     select_best_baseline_model_name,
 )
-from src.transformer import load_processed_split
-from src.utils import load_yaml_config
+from src.utils import load_processed_split, load_yaml_config
 
 
 def parse_args() -> argparse.Namespace:

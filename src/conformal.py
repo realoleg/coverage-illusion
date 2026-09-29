@@ -107,11 +107,7 @@ def compute_conformal_quantile(scores: np.ndarray, alpha: float) -> float:
     quantile_level = np.ceil((n + 1) * (1.0 - alpha)) / n
     quantile_level = min(float(quantile_level), 1.0)
 
-    try:
-        q_hat = np.quantile(scores, quantile_level, method="higher")
-    except TypeError:
-        q_hat = np.quantile(scores, quantile_level, interpolation="higher")
-
+    q_hat = np.quantile(scores, quantile_level, method="higher")
     return float(q_hat)
 
 

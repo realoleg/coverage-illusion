@@ -4,9 +4,8 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
-from src.baselines import(
+from src.baselines import (
     build_baseline_models,
     evaluate_models_on_split,
     fit_models,
@@ -67,28 +66,28 @@ def main() -> None:
     predictions_out = pd.concat(all_predictions, ignore_index=True)
 
     tables_dir = Path("results/tables")
-    predicitons_dir = Path("results/predictions")
+    predictions_dir = Path("results/predictions")
     checkpoints_dir = Path("results/checkpoints/baselines")
 
     tables_dir.mkdir(parents=True, exist_ok=True)
-    predicitons_dir.mkdir(parents=True, exist_ok=True)
+    predictions_dir.mkdir(parents=True, exist_ok=True)
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_out.to_csv(tables_dir / "baseline_metrics.csv", index=False)
-    predictions_out.to_csv(predicitons_dir / "baseline_predictions.csv", index=False)
+    predictions_out.to_csv(predictions_dir / "baseline_predictions.csv", index=False)
     save_models(models=models, output_dir=checkpoints_dir)
 
-    print ("Saved metrics to: ", (tables_dir / "baseline_metrics.csv").resolve())
-    print ("Saved predicitons to: ", (predicitons_dir / "baseline_predictions").resolve())
-    print ("Saved fitted baseline models to: ", checkpoints_dir.resolve())
+    print("Saved metrics to: ", (tables_dir / "baseline_metrics.csv").resolve())
+    print("Saved predictions to: ", (predictions_dir / "baseline_predictions.csv").resolve())
+    print("Saved fitted baseline models to: ", checkpoints_dir.resolve())
 
-    print ("\nTest-set summary:")
+    print("\nTest-set summary:")
     test_summary = (
         metrics_out[metrics_out["split"] == "test"]
         .sort_values("macro_f1", ascending=False)
         .reset_index(drop=True)
     )
-    print (test_summary.to_string(index=False))
+    print(test_summary.to_string(index=False))
 
 
 

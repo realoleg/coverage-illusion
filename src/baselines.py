@@ -22,7 +22,7 @@ def build_baseline_models(
     Create two baseline pipelines (tfidf+logreg; tfidf+linearSVM).
     """
 
-    vectorized_kwargs = {
+    vectorizer_kwargs = {
         "max_features": max_features,
         "ngram_range": ngram_range,
         "lowercase": True,
@@ -32,7 +32,7 @@ def build_baseline_models(
     models = {
         "tfidf_logreg": Pipeline(
             steps=[
-                ("tfidf", TfidfVectorizer(**vectorized_kwargs)),
+                ("tfidf", TfidfVectorizer(**vectorizer_kwargs)),
                 (
                     "clf",
                     LogisticRegression(
@@ -45,7 +45,7 @@ def build_baseline_models(
         ),
         "tfidf_linear_svm": Pipeline(
             steps=[
-                ("tfidf", TfidfVectorizer(**vectorized_kwargs)),
+                ("tfidf", TfidfVectorizer(**vectorizer_kwargs)),
                 (
                     "clf",
                     LinearSVC(
@@ -85,7 +85,7 @@ def evaluate_models_on_split(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     
     """
-    Run predictions for all models on one split and return two df: metrics and predicitons.
+    Run predictions for all models on one split and return two df: metrics and predictions.
     """
 
     x = df["text"].tolist()
