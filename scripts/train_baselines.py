@@ -41,6 +41,7 @@ def main() -> None:
     models = build_baseline_models(
         max_features=max_features,
         ngram_range=ngram_range,
+        seed=int(config["seed"]),
     )
     models = fit_models(models=models, train_df=train_df)
 

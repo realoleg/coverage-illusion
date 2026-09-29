@@ -15,6 +15,7 @@ from src.evaluate import build_metrics_row, build_prediction_frame
 def build_baseline_models(
         max_features: int = 20000,
         ngram_range: tuple[int, int] = (1,2),
+        seed: int = 42,
 ) -> dict[str, Pipeline]:
 
     """
@@ -37,7 +38,7 @@ def build_baseline_models(
                     LogisticRegression(
                         max_iter=2000,
                         solver="liblinear",
-                        random_state=42,
+                        random_state=seed,
                     ),
                 ),
             ]
@@ -49,7 +50,7 @@ def build_baseline_models(
                     "clf",
                     LinearSVC(
                         max_iter=5000,
-                        random_state=42,
+                        random_state=seed,
                     ),
                 ),
             ]
