@@ -65,7 +65,7 @@ where truncation keeps only the first fraction of the text, and deletion randoml
 ### Clean test performance
 The transformer substantially outperforms both lexical baselines on the clean test set.
 
-- **Best baseline (`TF-IDF + Logistic Regression`)**
+- **Best baseline (TF-IDF + Logistic Regression)**
   - Accuracy: **0.706**
   - Macro-F1: **0.702**
 
@@ -94,6 +94,13 @@ This suggests that the stronger contextual model benefits more from full input, 
 
 ### Conformal prediction under degraded input
 On the clean test set, split conformal prediction behaves as expected:
+
+| alpha | 0.10 | 0.05 |
+| :--- | :--- | :--- |
+| target coverage | 90 % | 95 % |
+| empirical coverage | 0.892 | 0.948 |
+| average set size | 1.284 | 1.522 |
+| singleton rate | 0.716 | 0.478 |
 
 - **alpha = 0.10** (target coverage 90%)
   - empirical coverage: **0.892**
@@ -160,12 +167,12 @@ dreaddit-conformal-mental-project/
 This project uses `uv` for environment management.
 
 ## Install dependencies
-```text
+```shell
 uv sync
 ```
 
 ## Run the pipeline step-by-step
-```text
+```shell
 uv run python -m scripts.prepare_data
 uv run python -m scripts.train_baselines
 uv run python -m scripts.train_transformer
