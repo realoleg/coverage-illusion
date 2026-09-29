@@ -145,7 +145,8 @@ dreaddit-conformal-mental-project/
 │   ├── conformal.py
 │   ├── stress_tests.py
 │   ├── evaluate.py
-│   └── plots.py
+│   ├── plots.py
+│   └── utils.py
 ├── scripts/
 │   ├── prepare_data.py
 │   ├── train_baselines.py
@@ -191,7 +192,7 @@ Key outputs are saved under:
 - `results/figures`
   - clean comparison figure
   - stress-test classification figure
-  - confrmal figures
+  - conformal figures
 
 ---
 
