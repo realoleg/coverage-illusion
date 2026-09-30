@@ -93,26 +93,23 @@ This suggests that the stronger contextual model benefits more from full input, 
 ![Stress-test classification performance](results/figures/figure_stress_classification_performance.png)
 
 ### Conformal prediction under degraded input
-On the clean test set, split conformal prediction behaves as expected:
+On the clean test set, split conformal prediction reaches the target coverage up to sampling noise:
 
 | alpha | 0.10 | 0.05 |
 | :--- | :--- | :--- |
 | target coverage | 90 % | 95 % |
-| empirical coverage | 0.892 | 0.948 |
-| average set size | 1.284 | 1.522 |
-| singleton rate | 0.716 | 0.478 |
+| empirical coverage | 0.894 | 0.948 |
+| average set size | 1.288 | 1.520 |
+| singleton rate | 0.712 | 0.480 |
 
-- **alpha = 0.10** (target coverage 90%)
-  - empirical coverage: **0.892**
-  - average set size: **1.284**
-  - singleton rate: **0.716**
+The split-conformal guarantee is marginal: coverage ≥ 1 − alpha holds in expectation over calibration and test draws, so a single test set of 715 examples can land slightly below target (0.894 vs 0.90 is within one standard error, ≈ 0.011).
 
-- **alpha = 0.05** (target coverage 95%)
-  - empirical coverage: **0.948**
-  - average set size: **1.522**
-  - singleton rate: **0.478**
+Under degraded input the guarantee no longer applies: calibration is done on clean text, so calibration and degraded test examples are not exchangeable. Empirically:
+- at **alpha = 0.10**, coverage falls below target under every perturbation (**0.867–0.888**, lowest under `truncate_50`);
+- at **alpha = 0.05**, coverage stays at or above target (**0.952–0.962**), but mainly because more sets contain both labels (up to **76 %** full sets under `truncate_25`);
+- set size grows and the singleton rate drops as degradation gets stronger, most clearly for truncation; mild deletion (`delete_15`) barely changes set size (at alpha = 0.10 it is even slightly smaller than on clean text).
 
-Under stronger degradation, prediction sets become larger and singleton predictions become less frequent. This is exactly the kind of behaviour we want from an uncertainty-aware output layer under imperfect input.
+So the conformal layer does become more cautious under degraded input, but this caution is not calibrated to the shift: the clean-data coverage level is not preserved.
 
 ![Conformal set size under stress](results/figures/figure_conformal_set_size.png)
 
@@ -124,7 +121,7 @@ Three main observations emerge from this study:
 
 1. **Transformers matter:** a fine-tuned DistilBERT provides a strong improvement over lexical baselines on clean text.
 2. **Input quality matters:** truncation is more harmful than mild random deletion, and severe truncation substantially narrows the transformer’s advantage.
-3. **Uncertainty matters:** conformal prediction does not “fix” degraded inputs, but it does provide a more cautious output layer as the signal becomes weaker.
+3. **Uncertainty matters:** conformal prediction does not “fix” degraded inputs, but it does provide a more cautious output layer as the signal becomes weaker; its coverage guarantee, however, holds only for inputs exchangeable with the clean calibration data.
 
 This is the central methodological point of the project: **evaluation under non-ideal conditions is more informative than clean accuracy alone**.
 
