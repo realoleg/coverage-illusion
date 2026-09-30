@@ -205,18 +205,3 @@ Model checkpoints (`results/checkpoints/`, ~260 MB) are not tracked in git and a
 
 ## Determinism
 Baseline results and DistilBERT clean-split metrics reproduce exactly on reruns. DistilBERT fine-tuning on Apple MPS is not bit-deterministic, so predicted probabilities can drift slightly between runs, shifting some stress-test and conformal numbers in the third decimal.
-
----
-
-# known issues and to-do list
-
-do comments on repo structure
-
-do something with .ipynb ... don't know what yet ... (probably exploratory data analysis of whole dreaddit)
-
-think about adding a causal layer and how it lays with project
-
-!!! I've made a grammar mistake in naming functions (src/data/def add_basic_text_features) and (src/stress_tests/def add_basic_features) -> text_lengTH and text_lengHT
-**I've fixed it** and moved to utils.py , but fixing will change columns naming in data/processed/*.csv , so after dealing with it **I may rerun** whole pipeline to make final version and results will drift a bit and affecting a README summary
-
----
