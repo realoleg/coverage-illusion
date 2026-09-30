@@ -23,3 +23,7 @@ results/checkpoints/
 
 # Claude Code
 CLAUDE.md
+plan.md
+
+# Keys
+.env
