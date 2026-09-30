@@ -135,6 +135,10 @@ dreaddit-conformal-mental-project/
 │   └── base.yaml
 ├── data/
 │   └── processed/
+│       ├── train.csv
+│       ├── calibration.csv
+│       ├── validation.csv
+│       └── test.csv
 ├── src/
 │   ├── data.py
 │   ├── baselines.py
@@ -153,7 +157,9 @@ dreaddit-conformal-mental-project/
 │   └── make_report_assets.py
 ├── results/
 │   ├── tables/
+│   ├── predictions/
 │   └── figures/
+├── .python-version
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
@@ -179,17 +185,26 @@ uv run python -m scripts.stress_tests
 uv run python -m scripts.make_report_assets
 ```
 
+All steps use `configs/base.yaml` by default (seed 42, all hyperparameters); another config can be passed with `--config <path>`.
+
 ## Outputs
 Key outputs are saved under:
 - `results/tables/`
-  - clean metrics
+  - clean metrics (baselines, DistilBERT, conformal)
   - stress-test classification metrics
-  - conformal metrics
-  - final summary table
-- `results/figures`
+  - stress-test conformal metrics
+  - final summary tables (clean performance, stress classification, stress conformal)
+- `results/predictions/`
+  - per-example predictions of every step
+- `results/figures/`
   - clean comparison figure
   - stress-test classification figure
   - conformal figures
+
+Model checkpoints (`results/checkpoints/`, ~260 MB) are not tracked in git and are recreated by the training steps.
+
+## Determinism
+Baseline results and DistilBERT clean-split metrics reproduce exactly on reruns. DistilBERT fine-tuning on Apple MPS is not bit-deterministic, so predicted probabilities can drift slightly between runs, shifting some stress-test and conformal numbers in the third decimal.
 
 ---
 
