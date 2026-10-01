@@ -92,6 +92,7 @@ def main() -> None:
         num_train_epochs=int(encoder_config["num_train_epochs"]),
         weight_decay=float(encoder_config["weight_decay"]),
         warmup_ratio=float(encoder_config["warmup_ratio"]),
+        torch_empty_cache_steps=int(encoder_config["torch_empty_cache_steps"]),
         seed=seed,
         callbacks=[epoch_timer],
     )

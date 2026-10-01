@@ -126,6 +126,7 @@ def build_trainer(
         num_train_epochs: int,
         weight_decay: float,
         warmup_ratio: float,
+        torch_empty_cache_steps: int,
         seed: int,
         callbacks: list[TrainerCallback] | None = None,
 ) -> Trainer:
@@ -158,6 +159,8 @@ def build_trainer(
         weight_decay=weight_decay,
         # transformers 5: a float < 1 is a fraction of total steps (warmup_ratio is deprecated).
         warmup_steps=warmup_ratio,
+        # Releases the MPS allocator cache; it grows with dynamic padding until out of memory.
+        torch_empty_cache_steps=torch_empty_cache_steps,
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
@@ -220,6 +223,8 @@ def predict_logits(
 
     """
     Logits of shape (n_texts, 2), in the order of texts.
+    Inputs are batched in order of token length (fewer batch shapes, less padding),
+    then restored to the original order; the MPS cache is released after the pass.
     """
 
     dataset = tokenize_dataframe(
@@ -228,10 +233,26 @@ def predict_logits(
         max_length=max_length,
         desc=desc,
     )
-    logits = np.asarray(trainer.predict(dataset).predictions)
+    lengths = np.array([len(input_ids) for input_ids in dataset["input_ids"]])
+    order = np.argsort(lengths, kind="stable")
+
+    sorted_logits = np.asarray(trainer.predict(dataset.select(order)).predictions)
+    logits = np.empty_like(sorted_logits)
+    logits[order] = sorted_logits
+    clear_device_cache()
 
     assert logits.shape == (len(texts), 2), logits.shape
     return logits
+
+
+def clear_device_cache() -> None:
+
+    """
+    Release cached MPS memory that no tensor uses (no effect on results).
+    """
+
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
 
 
 def split_sentences(text: str) -> list[str]:
