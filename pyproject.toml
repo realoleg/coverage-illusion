@@ -1,7 +1,7 @@
 [project]
-name = "dreaddit-conformal-mental-project"
+name = "coverage-illusion"
 version = "0.1.0"
-description = "Uncertainty-aware transformer text classification on Dreaddit corpus with conformal prediction under degraded input."
+description = "The Coverage Illusion: marginal conformal guarantees miss the at-risk class in mental health NLP. Code and experiments for the paper."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
