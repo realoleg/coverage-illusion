@@ -22,6 +22,9 @@ data:
 baselines:
   max_features: 20000
   ngram_range: [1, 2]
+  # TF-IDF + LogReg: C chosen by validation macro-F1 (ties -> smaller C). LinearSVC keeps its default C = 1.
+  # Both are deterministic: one run each, folder seed_<seed> with the top-level seed.
+  logreg_c_grid: [0.1, 0.3, 1, 3, 10]
 
 paths:
   # One folder per run: <runs_dir>/<dataset>/<model>/seed_<seed>/

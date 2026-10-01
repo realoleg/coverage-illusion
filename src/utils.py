@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import platform
 import subprocess
+from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,15 @@ def get_library_versions() -> dict[str, str]:
     for library in TRACKED_LIBRARIES:
         versions[library] = version(library)
     return versions
+
+
+def now_iso() -> str:
+
+    """
+    Current local time with timezone, ISO 8601, seconds precision.
+    """
+
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def save_json(data: dict[str, Any], output_path: str | Path) -> None:

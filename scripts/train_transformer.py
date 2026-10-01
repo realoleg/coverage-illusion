@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import shutil
 import time
-from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.degradations import load_condition_texts, select_condition_texts
-from src.evaluate import compute_classification_metrics, stable_softmax
+from src.degradations import iter_prediction_inputs, load_condition_texts
+from src.evaluate import (
+    build_prediction_rows,
+    compute_classification_metrics,
+    predicted_labels,
+    save_predictions,
+)
 from src.transformer import (
     EpochTimer,
     build_tokenized_splits,
@@ -26,8 +29,8 @@ from src.utils import (
     get_commit_hash,
     get_library_versions,
     load_yaml_config,
+    now_iso,
     save_json,
-    word_count,
 )
 
 
@@ -44,16 +47,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
 def main() -> None:
     load_dotenv()
     args = parse_args()
     config = load_yaml_config(args.config)
 
-    started_at = now()
+    started_at = now_iso()
     start_time = time.perf_counter()
 
     dataset = config["data"]["name"]
@@ -106,41 +105,20 @@ def main() -> None:
     prediction_frames: list[pd.DataFrame] = []
     clean_metrics: dict[str, dict[str, float]] = {}
 
-    for split_name in ["validation", "calibration", "test"]:
-        df = split_to_df[split_name]
-        split_conditions = ["clean"] if split_name == "validation" else conditions
+    for split_name, condition, df, texts in iter_prediction_inputs(split_to_df, condition_texts, conditions):
+        logits = predict_logits(
+            trainer, tokenizer, texts, max_length, desc=f"Tokenizing {split_name}/{condition}"
+        )
+        frame = build_prediction_rows(df["id"], split_name, condition, df["label"], texts, logits=logits)
+        prediction_frames.append(frame)
 
-        for condition in split_conditions:
-            if split_name == "validation":
-                texts = df["text"].astype(str)
-            else:
-                texts = select_condition_texts(condition_texts, split_name, condition, df["id"])
-            logits = predict_logits(
-                trainer, tokenizer, texts, max_length, desc=f"Tokenizing {split_name}/{condition}"
-            )
-            probabilities = stable_softmax(logits)
-
-            prediction_frames.append(pd.DataFrame({
-                "id": df["id"].to_numpy(),
-                "split": split_name,
-                "condition": condition,
-                "label": df["label"].to_numpy(),
-                "n_words": word_count(texts).to_numpy(),
-                "prob_not_stress": probabilities[:, 0],
-                "prob_stress": probabilities[:, 1],
-                "logit_not_stress": logits[:, 0],
-                "logit_stress": logits[:, 1],
-            }))
-
-            if condition == "clean":
-                clean_metrics[split_name] = compute_classification_metrics(
-                    df["label"].to_numpy(), np.argmax(logits, axis=-1)
-                )
+        if condition == "clean":
+            clean_metrics[split_name] = compute_classification_metrics(frame["label"], predicted_labels(frame))
 
     predictions = pd.concat(prediction_frames, ignore_index=True)
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    predictions.to_csv(run_dir / "predictions.csv", index=False)
+    save_predictions(predictions, run_dir / "predictions.csv.gz")
 
     with_occlusion = dataset == "dreaddit" and model_key in encoder_config["occlusion_models"]
     if with_occlusion:
@@ -187,7 +165,7 @@ def main() -> None:
             "epoch_seconds": epoch_timer.epoch_seconds,
             "total_seconds": round(time.perf_counter() - start_time, 1),
             "started_at": started_at,
-            "finished_at": now(),
+            "finished_at": now_iso(),
             "versions": get_library_versions(),
             "config": {
                 "data": config["data"],

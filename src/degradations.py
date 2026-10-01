@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -234,3 +235,22 @@ def select_condition_texts(
     ].set_index("id")["text"]
 
     return selected.loc[ids.to_numpy()].reset_index(drop=True)
+
+
+def iter_prediction_inputs(
+        split_to_df: dict[str, pd.DataFrame],
+        condition_texts: pd.DataFrame,
+        conditions: list[str],
+) -> Iterator[tuple[str, str, pd.DataFrame, pd.Series]]:
+
+    """
+    Yield (split, condition, split df, texts) for every prediction a run makes:
+    validation clean only; calibration and test in every condition (texts from the saved file).
+    """
+
+    yield "validation", "clean", split_to_df["validation"], split_to_df["validation"]["text"].astype(str)
+
+    for split_name in ["calibration", "test"]:
+        df = split_to_df[split_name]
+        for condition in conditions:
+            yield split_name, condition, df, select_condition_texts(condition_texts, split_name, condition, df["id"])

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
-OPTIONAL_PREDICTION_COLUMNS = [
-    "subreddit",
-]
+from src.utils import word_count
 
 
 def compute_classification_metrics(y_true, y_pred) -> dict[str, float]:
@@ -27,26 +25,6 @@ def compute_classification_metrics(y_true, y_pred) -> dict[str, float]:
     }
 
 
-def build_metrics_row(
-        model_name: str,
-        split_name: str,
-        y_true,
-        y_pred,
-) -> dict[str, Any]:
-
-    """
-    Building one flat metrics row (in case of CSV export).
-    """
-
-    metrics = compute_classification_metrics(y_true, y_pred)
-    return {
-        "model_name": model_name,
-        "split": split_name,
-        "n_examples": int(len(y_true)),
-        **metrics,
-    }
-
-
 def stable_softmax(logits: np.ndarray) -> np.ndarray:
 
     """
@@ -58,36 +36,60 @@ def stable_softmax(logits: np.ndarray) -> np.ndarray:
     return exp_values / np.sum(exp_values, axis=1, keepdims=True)
 
 
-def build_prediction_frame(
-        df: pd.DataFrame,
+def build_prediction_rows(
+        ids: pd.Series,
         split_name: str,
-        model_name: str,
-        pred_labels: np.ndarray,
+        condition: str,
+        labels: pd.Series,
+        texts: pd.Series,
         logits: np.ndarray | None = None,
-        stress_test_name: str | None = None,
+        decision_scores: np.ndarray | None = None,
 ) -> pd.DataFrame:
 
     """
-    Build a tidy prediction table for baseline or transformer predictions.
-    Probabilities and logits are added only when logits are given.
+    Prediction rows of one (split, condition) in the shared run schema. Texts are used only for n_words
+    and are never stored. Probabilistic models give 2-class logits; LinearSVC gives decision scores.
     """
 
-    columns = ["example_id", "text", "label"]
-    columns += [col for col in OPTIONAL_PREDICTION_COLUMNS if col in df.columns]
-
-    out = df[columns].copy()
-    out["split"] = split_name
-    if stress_test_name is not None:
-        out["stress_test"] = stress_test_name
-    out["model_name"] = model_name
-    out["pred_label"] = pred_labels.astype(int)
-    out["correct"] = (out["label"] == out["pred_label"]).astype(int)
+    out = pd.DataFrame({
+        "id": ids.to_numpy(),
+        "split": split_name,
+        "condition": condition,
+        "label": labels.to_numpy(),
+        "n_words": word_count(texts).to_numpy(),
+    })
 
     if logits is not None:
+        assert logits.shape == (len(out), 2), logits.shape
         probabilities = stable_softmax(logits)
         out["prob_not_stress"] = probabilities[:, 0]
         out["prob_stress"] = probabilities[:, 1]
         out["logit_not_stress"] = logits[:, 0]
         out["logit_stress"] = logits[:, 1]
 
+    if decision_scores is not None:
+        assert decision_scores.shape == (len(out),), decision_scores.shape
+        out["decision_score"] = decision_scores
+
     return out
+
+
+def predicted_labels(predictions: pd.DataFrame) -> np.ndarray:
+
+    """
+    Hard labels: argmax of probabilities, or the sign of the decision score.
+    """
+
+    if "prob_stress" in predictions.columns:
+        return (predictions["prob_stress"] > predictions["prob_not_stress"]).astype(int).to_numpy()
+    return (predictions["decision_score"] > 0).astype(int).to_numpy()
+
+
+def save_predictions(predictions: pd.DataFrame, path: str | Path) -> None:
+
+    """
+    Save predictions as gzip CSV with a fixed gzip timestamp, so identical predictions give identical bytes.
+    """
+
+    assert "text" not in predictions.columns
+    predictions.to_csv(path, index=False, compression={"method": "gzip", "mtime": 0})

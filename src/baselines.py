@@ -1,138 +1,75 @@
 from __future__ import annotations
 
-import pickle
-from pathlib import Path
-
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import f1_score
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 
-from src.evaluate import build_metrics_row, build_prediction_frame
+
+def build_vectorizer(max_features: int, ngram_range: tuple[int, int]) -> TfidfVectorizer:
+    return TfidfVectorizer(
+        max_features=max_features,
+        ngram_range=ngram_range,
+        lowercase=True,
+        strip_accents="unicode",
+    )
 
 
-def build_baseline_models(
-        max_features: int = 20000,
-        ngram_range: tuple[int, int] = (1,2),
-        seed: int = 42,
-) -> dict[str, Pipeline]:
-
-    """
-    Create two baseline pipelines (tfidf+logreg; tfidf+linearSVM).
-    """
-
-    vectorizer_kwargs = {
-        "max_features": max_features,
-        "ngram_range": ngram_range,
-        "lowercase": True,
-        "strip_accents": "unicode",
-    }
-
-    models = {
-        "tfidf_logreg": Pipeline(
-            steps=[
-                ("tfidf", TfidfVectorizer(**vectorizer_kwargs)),
-                (
-                    "clf",
-                    LogisticRegression(
-                        max_iter=2000,
-                        solver="liblinear",
-                        random_state=seed,
-                    ),
-                ),
-            ]
-        ),
-        "tfidf_linear_svm": Pipeline(
-            steps=[
-                ("tfidf", TfidfVectorizer(**vectorizer_kwargs)),
-                (
-                    "clf",
-                    LinearSVC(
-                        max_iter=5000,
-                        random_state=seed,
-                    ),
-                ),
-            ]
-        ),
-    }
-
-    return models
+def build_logreg(max_features: int, ngram_range: tuple[int, int], c_value: float, seed: int) -> Pipeline:
+    return Pipeline(steps=[
+        ("tfidf", build_vectorizer(max_features, ngram_range)),
+        ("clf", LogisticRegression(C=c_value, max_iter=2000, solver="liblinear", random_state=seed)),
+    ])
 
 
-def fit_models(
-        models: dict[str, Pipeline],
+def build_linear_svm(max_features: int, ngram_range: tuple[int, int], seed: int) -> Pipeline:
+    return Pipeline(steps=[
+        ("tfidf", build_vectorizer(max_features, ngram_range)),
+        ("clf", LinearSVC(max_iter=5000, random_state=seed)),
+    ])
+
+
+def fit_logreg_with_c_selection(
         train_df: pd.DataFrame,
-) -> dict[str, Pipeline]:
-    
+        validation_df: pd.DataFrame,
+        c_grid: list[float],
+        max_features: int,
+        ngram_range: tuple[int, int],
+        seed: int,
+) -> tuple[Pipeline, float, dict[float, float]]:
+
     """
-    Fit each baseline model on training DataFrame.
-    """
-
-    x_train = train_df["text"].tolist()
-    y_train = train_df["label"].to_numpy()
-
-    for model in models.values():
-        model.fit(x_train, y_train)
-    
-    return models
-
-
-def evaluate_models_on_split(
-        models: dict[str, Pipeline],
-        df: pd.DataFrame,
-        split_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    
-    """
-    Run predictions for all models on one split and return two df: metrics and predictions.
+    Fit LogReg on train for every C; pick the C with the best validation macro-F1 (ties -> smaller C).
+    Returns the model fitted on train with that C, the C, and the validation macro-F1 per C.
     """
 
-    x = df["text"].tolist()
-    y = df["label"].to_numpy()
+    models: dict[float, Pipeline] = {}
+    scores: dict[float, float] = {}
+    for c_value in sorted(c_grid):
+        model = build_logreg(max_features, ngram_range, c_value, seed)
+        model.fit(train_df["text"].tolist(), train_df["label"].to_numpy())
+        y_pred = model.predict(validation_df["text"].tolist())
+        models[c_value] = model
+        scores[c_value] = float(f1_score(validation_df["label"], y_pred, average="macro"))
 
-    metrics_rows: list[dict] = []
-    prediction_frames: list[pd.DataFrame] = []
+    best_score = max(scores.values())
+    best_c = min(c_value for c_value, score in scores.items() if score == best_score)
 
-    for model_name, model in models.items():
-        y_pred = model.predict(x).astype(int)
-
-        metrics_rows.append(
-            build_metrics_row(
-                model_name=model_name,
-                split_name=split_name,
-                y_true=y,
-                y_pred=y_pred,
-            )
-        )
-        prediction_frames.append(
-            build_prediction_frame(
-                df=df,
-                split_name=split_name,
-                model_name=model_name,
-                pred_labels=y_pred,
-            )
-        )
-    
-    metrics_df = pd.DataFrame(metrics_rows)
-    predictions_df = pd.concat(prediction_frames, ignore_index=True)
-
-    return metrics_df, predictions_df
+    return models[best_c], best_c, scores
 
 
-def save_models(
-        models: dict[str, Pipeline],
-        output_dir: str | Path,
-) -> None:
-    
+def logreg_logits(model: Pipeline, texts: pd.Series) -> np.ndarray:
+
     """
-    Save fitted baseline pipelines for potential reuse.
+    2-class logits (0, decision_function): their softmax equals predict_proba.
     """
 
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    decision = model.decision_function(texts.tolist())
+    logits = np.column_stack([np.zeros_like(decision), decision])
 
-    for model_name, model in models.items():
-        save_path = output_path / f"{model_name}.pkl"
-        with open(save_path, "wb") as f:
-            pickle.dump(model, f)
+    probabilities = model.predict_proba(texts.tolist())
+    assert np.allclose(1.0 / (1.0 + np.exp(-decision)), probabilities[:, 1])
+    return logits
