@@ -2,8 +2,20 @@ seed: 42
 
 data:
   dataset_name: "asmaab/dreaddit"
-  calibration_size: 0.2
   output_dir: "data/processed"
+  # Pool = HF train + HF validation, split by post_id, stratified by label:
+  # StratifiedGroupKFold(n_splits, shuffle=True, random_state).
+  # Fold k = the k-th test fold yielded by StratifiedGroupKFold(...).split().
+  # Fold ranges are inclusive. The official HF test split is kept as the test set.
+  split:
+    n_splits: 20
+    train_folds: [0, 11]
+    validation_folds: [12, 14]
+    calibration_folds: [15, 19]
+    # Initial value; incremented (43, 44, ...) until the calibration minimums below hold.
+    random_state: 42
+    min_calibration_rows: 650
+    min_calibration_rows_per_class: 300
 
 baselines:
   max_features: 20000
