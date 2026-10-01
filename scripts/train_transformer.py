@@ -93,6 +93,7 @@ def main() -> None:
         weight_decay=float(encoder_config["weight_decay"]),
         warmup_ratio=float(encoder_config["warmup_ratio"]),
         torch_empty_cache_steps=int(encoder_config["torch_empty_cache_steps"]),
+        pad_to_multiple_of=int(encoder_config["pad_to_multiple_of"]),
         seed=seed,
         callbacks=[epoch_timer],
     )
@@ -158,6 +159,8 @@ def main() -> None:
             * int(encoder_config["gradient_accumulation_steps"]),
             # Batch 8 x accumulation 2 replaces batch 16 after an MPS out-of-memory error.
             "oom_fallback": int(encoder_config["gradient_accumulation_steps"]) > 1,
+            "pad_to_multiple_of": int(encoder_config["pad_to_multiple_of"]),
+            "torch_empty_cache_steps": int(encoder_config["torch_empty_cache_steps"]),
             "conditions": conditions,
             "occlusion": with_occlusion,
             "n_rows": {name: len(df) for name, df in split_to_df.items()},

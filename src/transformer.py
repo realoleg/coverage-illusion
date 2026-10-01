@@ -127,6 +127,7 @@ def build_trainer(
         weight_decay: float,
         warmup_ratio: float,
         torch_empty_cache_steps: int,
+        pad_to_multiple_of: int,
         seed: int,
         callbacks: list[TrainerCallback] | None = None,
 ) -> Trainer:
@@ -144,7 +145,8 @@ def build_trainer(
         id2label=id2label,
     )
 
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    # Used for training, evaluation and every trainer.predict call (bounded set of batch shapes on MPS).
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer, pad_to_multiple_of=pad_to_multiple_of)
 
     training_args = TrainingArguments(
         output_dir=str(output_dir),
@@ -159,7 +161,7 @@ def build_trainer(
         weight_decay=weight_decay,
         # transformers 5: a float < 1 is a fraction of total steps (warmup_ratio is deprecated).
         warmup_steps=warmup_ratio,
-        # Releases the MPS allocator cache; it grows with dynamic padding until out of memory.
+        # Releases the MPS allocator cache (safeguard; the per-shape graph caches are bounded by pad_to_multiple_of).
         torch_empty_cache_steps=torch_empty_cache_steps,
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",

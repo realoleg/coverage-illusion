@@ -55,12 +55,16 @@ encoders:
   max_length: 512
   batch_size: 16
   gradient_accumulation_steps: 1
-  # Release the MPS allocator cache every N training steps: with dynamic padding the cache of freed blocks
-  # grows to the MPS limit (live tensors stay < 1 GB) and caused the earlier out-of-memory errors.
-  # Memory management only; training is unchanged. Prediction passes also release the cache after each pass.
+  # Release the MPS allocator cache every N training steps (prediction passes release it after each pass).
+  # A cheap safeguard only: the earlier out-of-memory errors came from per-shape MPS graph caches,
+  # which pad_to_multiple_of below bounds. Memory management only; results are unchanged.
   # If a model still hits a genuine OOM, it switches to batch_size 8 x gradient_accumulation_steps 2
   # for all its seeds (author's rule; recorded in run_meta.json).
   torch_empty_cache_steps: 10
+  # Per-batch dynamic padding, rounded up to a multiple of 64 tokens (training, validation, every prediction pass).
+  # MPS compiles and caches a graph per batch shape; unrounded lengths grew driver memory to the 18 GB limit.
+  # Padded positions are masked, so outputs change only by float32 rounding.
+  pad_to_multiple_of: 64
   learning_rate: 2.0e-5
   num_train_epochs: 3
   weight_decay: 0.01
