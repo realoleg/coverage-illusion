@@ -30,8 +30,17 @@ paths:
   checkpoints_dir: "results/checkpoints/tmp"
 
 # Conditions predicted on calibration and test (validation is always clean only).
-# Degradations are added in step 3.
-conditions: ["clean"]
+# Name = <family>_<percent>: head/tail keep that share of words, del deletes words with that probability,
+# typo replaces letters with that probability. Random streams are seeded by hash(seed, id, family),
+# so levels of one family are nested. Texts: <output_dir>/<data.name>_conditions.csv (scripts.make_conditions).
+# This order is also the M3-mix draw order.
+conditions: [
+  "clean",
+  "head_75", "head_50", "head_25",
+  "tail_75", "tail_50", "tail_25",
+  "del_15", "del_30",
+  "typo_05", "typo_10",
+]
 
 encoders:
   models:
@@ -55,9 +64,5 @@ encoders:
 conformal:
   method: "lac"
   alpha_values: [0.1, 0.05]
-
-stress_tests:
-  truncate_fracs: [0.75, 0.5, 0.25]
-  deletion_probs: [0.15, 0.30]
 
   

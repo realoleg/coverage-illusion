@@ -69,24 +69,6 @@ def load_processed_split(
     return out
 
 
-def add_text_length_features(
-        df: pd.DataFrame,
-        text_column: str = "text",
-) -> pd.DataFrame:
-    
-    """
-    Add text length features using the given text column.
-    """
-
-    out = df.copy()
-    text_series = out[text_column].astype(str)
-
-    out["text_length_chars"] = text_series.str.len()
-    out["text_length_words"] = text_series.str.split().str.len()
-
-    return out
-
-
 def word_count(texts: pd.Series) -> pd.Series:
 
     """

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from src.degradations import apply_condition
+from src.degradations import load_condition_texts, select_condition_texts
 from src.evaluate import compute_classification_metrics, stable_softmax
 from src.transformer import (
     EpochTimer,
@@ -73,6 +73,7 @@ def main() -> None:
     initialise_seed(seed)
 
     split_to_df = load_transformer_splits(data_dir=data_dir)
+    condition_texts = load_condition_texts(data_dir / f"{dataset}_conditions.csv")
     tokenizer, tokenized_splits = build_tokenized_splits(
         split_to_df={name: split_to_df[name][["text", "label"]] for name in ["train", "validation"]},
         model_name=model_name,
@@ -110,7 +111,10 @@ def main() -> None:
         split_conditions = ["clean"] if split_name == "validation" else conditions
 
         for condition in split_conditions:
-            texts = apply_condition(df, condition)
+            if split_name == "validation":
+                texts = df["text"].astype(str)
+            else:
+                texts = select_condition_texts(condition_texts, split_name, condition, df["id"])
             logits = predict_logits(
                 trainer, tokenizer, texts, max_length, desc=f"Tokenizing {split_name}/{condition}"
             )

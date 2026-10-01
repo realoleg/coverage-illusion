@@ -19,12 +19,7 @@ from transformers import (
     set_seed,
 )
 
-from src.evaluate import (
-    build_metrics_row,
-    build_prediction_frame,
-    compute_classification_metrics,
-    stable_softmax,
-)
+from src.evaluate import compute_classification_metrics, stable_softmax
 from src.utils import load_processed_split
 
 
@@ -304,44 +299,6 @@ def sentence_occlusion(
         "id", "label", "n_sentences", "sentence_idx", "position",
         "prob_stress_full", "prob_stress_without", "delta_prob_stress",
     ]]
-
-
-def predict_on_split(
-        trainer: Trainer,
-        dataset: Dataset,
-        original_df: pd.DataFrame,
-        split_name: str,
-        model_name: str,
-        stress_test_name: str | None = None,
-) -> tuple[dict[str, Any], pd.DataFrame]:
-    
-    """
-    Run prediction on one split and return: one metrics row, one predictions dataframe.
-    """
-
-    prediction_output = trainer.predict(dataset)
-    logits = np.asarray(prediction_output.predictions)
-    pred_labels = np.argmax(logits, axis=-1)
-
-    metrics_row = build_metrics_row(
-        model_name=model_name,
-        split_name=split_name,
-        y_true=original_df["label"].to_numpy(),
-        y_pred=pred_labels,
-    )
-    if stress_test_name is not None:
-        metrics_row["stress_test"] = stress_test_name
-
-    predictions_df = build_prediction_frame(
-        df=original_df,
-        split_name=split_name,
-        model_name=model_name,
-        pred_labels=pred_labels,
-        logits=logits,
-        stress_test_name=stress_test_name,
-    )
-
-    return metrics_row, predictions_df
 
 
 def initialise_seed(seed: int) -> None:

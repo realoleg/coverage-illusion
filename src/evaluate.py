@@ -7,10 +7,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 OPTIONAL_PREDICTION_COLUMNS = [
-    "original_text",
     "subreddit",
-    "text_length_chars",
-    "text_length_words",
 ]
 
 
