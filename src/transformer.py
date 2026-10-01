@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-import json
+import time
 from pathlib import Path
 from typing import Any
 
+import nltk
 import numpy as np
 import pandas as pd
+import torch
 from datasets import Dataset
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
     set_seed,
 )
@@ -20,6 +23,7 @@ from src.evaluate import (
     build_metrics_row,
     build_prediction_frame,
     compute_classification_metrics,
+    stable_softmax,
 )
 from src.utils import load_processed_split
 
@@ -122,12 +126,15 @@ def build_trainer(
         train_dataset: Dataset,
         eval_dataset: Dataset,
         batch_size: int,
+        gradient_accumulation_steps: int,
         learning_rate: float,
         num_train_epochs: int,
         weight_decay: float,
+        warmup_ratio: float,
         seed: int,
+        callbacks: list[TrainerCallback] | None = None,
 ) -> Trainer:
-    
+
     """
     Create the model, tokenizer-related collation, training arguments, and trainer.
     """
@@ -151,8 +158,11 @@ def build_trainer(
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=num_train_epochs,
         weight_decay=weight_decay,
+        # transformers 5: a float < 1 is a fraction of total steps (warmup_ratio is deprecated).
+        warmup_steps=warmup_ratio,
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
@@ -169,9 +179,131 @@ def build_trainer(
         processing_class=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_trainer_metrics,
+        callbacks=callbacks,
     )
 
     return trainer
+
+
+class EpochTimer(TrainerCallback):
+
+    """
+    Wall-clock seconds of each training epoch (excludes the end-of-epoch evaluation and saving).
+    """
+
+    def __init__(self) -> None:
+        self.epoch_seconds: list[float] = []
+        self._start = 0.0
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        self._start = time.perf_counter()
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        self.epoch_seconds.append(round(time.perf_counter() - self._start, 1))
+
+
+def get_training_device() -> str:
+
+    """
+    Encoders train on MPS; without MPS they fall back to CPU with a warning.
+    """
+
+    if torch.backends.mps.is_available():
+        return "mps"
+
+    print("WARNING: MPS is not available, training on CPU.")
+    return "cpu"
+
+
+def predict_logits(
+        trainer: Trainer,
+        tokenizer,
+        texts: pd.Series,
+        max_length: int,
+        desc: str,
+) -> np.ndarray:
+
+    """
+    Logits of shape (n_texts, 2), in the order of texts.
+    """
+
+    dataset = tokenize_dataframe(
+        df=pd.DataFrame({"text": texts.astype(str).to_numpy()}),
+        tokenizer=tokenizer,
+        max_length=max_length,
+        desc=desc,
+    )
+    logits = np.asarray(trainer.predict(dataset).predictions)
+
+    assert logits.shape == (len(texts), 2), logits.shape
+    return logits
+
+
+def split_sentences(text: str) -> list[str]:
+
+    """
+    Sentence split with nltk punkt (downloaded on first use).
+    """
+
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab", quiet=True)
+
+    return nltk.sent_tokenize(text)
+
+
+def sentence_occlusion(
+        trainer: Trainer,
+        tokenizer,
+        df: pd.DataFrame,
+        max_length: int,
+) -> pd.DataFrame:
+
+    """
+    For every sentence of every text with >= 2 sentences: change in p(stress) when the sentence is removed.
+    The reference is the text re-joined from all its sentences, so the delta reflects only the removal.
+    Position: first / last / middle sentence.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for example_id, label, text in zip(df["id"], df["label"], df["text"].astype(str)):
+        sentences = split_sentences(text)
+        n_sentences = len(sentences)
+        if n_sentences < 2:
+            continue
+
+        rows.append({
+            "id": example_id, "label": label, "n_sentences": n_sentences,
+            "sentence_idx": -1, "text": " ".join(sentences),
+        })
+        for idx in range(n_sentences):
+            rows.append({
+                "id": example_id, "label": label, "n_sentences": n_sentences,
+                "sentence_idx": idx, "text": " ".join(sentences[:idx] + sentences[idx + 1:]),
+            })
+
+    variants = pd.DataFrame(rows)
+    logits = predict_logits(trainer, tokenizer, variants["text"], max_length, desc="Tokenizing occlusion")
+    variants["prob_stress"] = stable_softmax(logits)[:, 1]
+
+    is_reference = variants["sentence_idx"] == -1
+    reference = variants[is_reference].set_index("id")["prob_stress"]
+
+    out = variants[~is_reference].drop(columns="text").reset_index(drop=True)
+    out["prob_stress_full"] = out["id"].map(reference)
+    out["delta_prob_stress"] = out["prob_stress"] - out["prob_stress_full"]
+    out["position"] = np.select(
+        [out["sentence_idx"] == 0, out["sentence_idx"] == out["n_sentences"] - 1],
+        ["first", "last"],
+        default="middle",
+    )
+    out = out.rename(columns={"prob_stress": "prob_stress_without"})
+
+    return out[[
+        "id", "label", "n_sentences", "sentence_idx", "position",
+        "prob_stress_full", "prob_stress_without", "delta_prob_stress",
+    ]]
 
 
 def predict_on_split(
@@ -210,19 +342,6 @@ def predict_on_split(
     )
 
     return metrics_row, predictions_df
-
-
-def save_training_metrics(metrics: dict[str, Any], output_path: str | Path) -> None:
-    
-    """
-    Save training metrics to JSON.
-    """
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
 
 
 def initialise_seed(seed: int) -> None:

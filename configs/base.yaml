@@ -1,6 +1,8 @@
 seed: 42
 
 data:
+  # Short dataset tag used in run folder paths.
+  name: "dreaddit"
   dataset_name: "asmaab/dreaddit"
   output_dir: "data/processed"
   # Pool = HF train + HF validation, split by post_id, stratified by label:
@@ -21,13 +23,34 @@ baselines:
   max_features: 20000
   ngram_range: [1, 2]
 
-transformer:
-  model_name: "distilbert-base-uncased"
-  max_length: 256
+paths:
+  # One folder per run: <runs_dir>/<dataset>/<model>/seed_<seed>/
+  runs_dir: "results/runs"
+  # Temporary training checkpoints; each run deletes its own folder after predicting.
+  checkpoints_dir: "results/checkpoints/tmp"
+
+# Conditions predicted on calibration and test (validation is always clean only).
+# Degradations are added in step 3.
+conditions: ["clean"]
+
+encoders:
+  models:
+    distilbert: "distilbert-base-uncased"
+    roberta: "roberta-base"
+    mentalroberta: "mental/mental-roberta-base"
+  seeds: [13, 42, 101, 2024, 7777]
+  # Shared by all encoders, no per-model tuning. Best epoch by validation macro-F1.
+  max_length: 512
+  # Effective batch 16 = batch_size 8 x gradient_accumulation_steps 2 (author's OOM fallback):
+  # batch_size 16 ran out of MPS memory (DistilBERT trial, seed 42, evaluation after epoch 2, 2026-10-02).
   batch_size: 8
+  gradient_accumulation_steps: 2
   learning_rate: 2.0e-5
   num_train_epochs: 3
   weight_decay: 0.01
+  warmup_ratio: 0.1
+  # Sentence occlusion on the clean test split (Dreaddit only).
+  occlusion_models: ["distilbert", "roberta"]
 
 conformal:
   method: "lac"

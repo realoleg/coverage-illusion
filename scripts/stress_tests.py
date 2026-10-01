@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from src.stress_tests import (
     build_conformal_metrics_and_predictions,
@@ -33,6 +34,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    load_dotenv()
     args = parse_args()
     config = load_yaml_config(args.config)
 

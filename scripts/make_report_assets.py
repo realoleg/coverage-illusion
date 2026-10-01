@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from src.plots import (
     plot_clean_model_comparison,
@@ -87,6 +88,7 @@ def build_conformal_test_table(
 
 
 def main() -> None:
+    load_dotenv()
     tables_dir = Path("results/tables")
     figures_dir = Path("results/figures")
     tables_dir.mkdir(parents=True, exist_ok=True)
