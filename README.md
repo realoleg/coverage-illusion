@@ -1,4 +1,4 @@
-# Uncertainty-Aware Transformer Stress Classification under Degraded Input
+# The Coverage Illusion: Marginal Conformal Guarantees Miss the At-Risk Class in Mental Health NLP
 
 A reproducible project on **transformer-based text classification with conformal prediction** under **incomplete or degraded input conditions**.
 
