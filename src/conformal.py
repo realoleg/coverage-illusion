@@ -1,257 +1,330 @@
 from __future__ import annotations
 
-from pathlib import Path
+import hashlib
+import math
+from fractions import Fraction
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import betabinom
 
+from src.degradations import length_bucket
 
-LABEL_NAMES = {
-    0: "not_stress",
-    1: "stress",
+RISK_CLASS = 1
+
+# Annotator-agreement buckets of Dreaddit `confidence` (missing = confidence 0 in the raw data).
+AGREEMENT_BINS = [0.0, 0.60, 0.87, 1.0]
+AGREEMENT_LABELS = ["0.43-0.60", "0.67-0.86", "1.00"]
+AGREEMENT_MISSING = "missing"
+
+# Method -> calibration source and threshold groups.
+#   calibration: "clean" (clean calibration), "matched" (calibration in the test condition), "mix" (M3-mix assignment)
+#   group_columns: extra grouping columns; by_class: one threshold per candidate class; risk_only: M5 screening flag.
+METHODS: dict[str, dict[str, Any]] = {
+    "M0": {"calibration": "clean", "group_columns": [], "by_class": False, "risk_only": False},
+    "M1": {"calibration": "clean", "group_columns": [], "by_class": True, "risk_only": False},
+    "M2": {"calibration": "clean", "group_columns": ["domain"], "by_class": True, "risk_only": False},
+    "M3": {"calibration": "matched", "group_columns": [], "by_class": True, "risk_only": False},
+    "M3-mix": {"calibration": "mix", "group_columns": ["length_bucket"], "by_class": True, "risk_only": False},
+    "M5": {"calibration": "clean", "group_columns": [], "by_class": True, "risk_only": True},
 }
 
-REQUIRED_COLUMNS = [
-    "split",
-    "label",
-    "prob_not_stress",
-    "prob_stress",
+# Per-example indicators; every metric below is a mean of one of them (so it can be reweighted by class).
+INDICATORS = [
+    "covered", "set_size", "singleton", "empty", "full",
+    "flag", "dismiss", "workload", "uncertainty_referral",
 ]
 
 
-def load_transformer_predictions(path: str | Path) -> pd.DataFrame:
-    
+def conformal_k(n: int, alpha: float) -> int:
+
     """
-    Load saved transformer predictions and validate the columns required for conformal post-processing.
-    """
-
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Transformer predictions file not found: {path}")
-
-    df = pd.read_csv(path)
-
-    missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
-    if missing:
-        raise ValueError(
-            f"Missing required columns in transformer predictions file: {missing}"
-        )
-
-    out = df.copy()
-    out["split"] = out["split"].astype(str)
-    out["label"] = out["label"].astype(int)
-    out["prob_not_stress"] = out["prob_not_stress"].astype(float)
-    out["prob_stress"] = out["prob_stress"].astype(float)
-
-    return out
-
-
-def get_split_predictions(df: pd.DataFrame, split_name: str) -> pd.DataFrame:
-    
-    """
-    Select one split from the saved transformer predictions.
+    Rank of the conformal threshold: k = ceil((n + 1)(1 - alpha)), computed exactly.
     """
 
-    out = df[df["split"] == split_name].copy().reset_index(drop=True)
-    if out.empty:
-        raise ValueError(f"No rows found for split='{split_name}'.")
-    return out
+    return math.ceil((n + 1) * (1 - Fraction(str(alpha))))
 
 
-def extract_probability_matrix(df: pd.DataFrame) -> np.ndarray:
-    
+def conformal_threshold(scores: np.ndarray, alpha: float) -> float:
+
     """
-    Extract the probability matrix of shape (n_samples, 2):
-    column 0 -> not_stress
-    column 1 -> stress
+    k-th smallest calibration score; +inf if k > n (the group is too small, every class is included).
     """
-
-    probs = df[["prob_not_stress", "prob_stress"]].to_numpy(dtype=float)
-
-    if probs.ndim != 2 or probs.shape[1] != 2:
-        raise ValueError("Expected probability matrix with shape (n_samples, 2).")
-
-    return probs
-
-
-def compute_lac_scores(probabilities: np.ndarray, true_labels: np.ndarray) -> np.ndarray:
-   
-    """
-    LAC nonconformity scores:
-        score_i = 1 - p_true_label(x_i)
-    """
-
-    row_idx = np.arange(len(true_labels))
-    true_class_probs = probabilities[row_idx, true_labels]
-    scores = 1.0 - true_class_probs
-    return scores.astype(float)
-
-
-def compute_conformal_quantile(scores: np.ndarray, alpha: float) -> float:
-    
-    """
-    Split-conformal quantile with finite-sample correction:
-        q_hat = Quantile(scores; ceil((n + 1) * (1 - alpha)) / n)
-
-    Uses a conservative 'higher' rule.
-    """
-
-    if not 0.0 < alpha < 1.0:
-        raise ValueError(f"alpha must be in (0, 1), got {alpha}")
 
     n = len(scores)
-    if n == 0:
-        raise ValueError("Cannot compute conformal quantile from an empty score array.")
-
-    quantile_level = np.ceil((n + 1) * (1.0 - alpha)) / n
-    quantile_level = min(float(quantile_level), 1.0)
-
-    q_hat = np.quantile(scores, quantile_level, method="higher")
-    return float(q_hat)
+    k = conformal_k(n, alpha)
+    if k > n:
+        return math.inf
+    return float(np.sort(scores)[k - 1])
 
 
-def compute_probability_threshold(q_hat: float) -> float:
-    
+def reference_band(n_calibration: int, m_test: int, alpha: float, level: float = 0.95) -> tuple[float, float]:
+
     """
-    Under LAC, include class y if:
-        p_y(x) >= 1 - q_hat
+    Central `level` interval of test coverage when the guarantee holds:
+    BetaBinomial(m, n + 1 - l, l) / m with l = floor((n + 1) alpha). If l = 0 the threshold is +inf and coverage is 1.
     """
 
-    threshold = 1.0 - q_hat
-    return float(np.clip(threshold, 0.0, 1.0))
+    if n_calibration == 0 or m_test == 0:
+        return math.nan, math.nan
+
+    ell = math.floor((n_calibration + 1) * Fraction(str(alpha)))
+    if ell == 0:
+        return 1.0, 1.0
+
+    distribution = betabinom(m_test, n_calibration + 1 - ell, ell)
+    tail = (1 - level) / 2
+    return float(distribution.ppf(tail) / m_test), float(distribution.ppf(1 - tail) / m_test)
 
 
-def build_prediction_set_mask(
-    probabilities: np.ndarray,
-    probability_threshold: float,
-) -> np.ndarray:
-    
+def agreement_bucket(confidence: pd.Series) -> pd.Series:
+    buckets = pd.cut(confidence, bins=AGREEMENT_BINS, labels=AGREEMENT_LABELS).astype(object)
+    assert buckets[confidence.notna()].notna().all(), "confidence value outside the agreement buckets"
+    return buckets.where(confidence.notna(), AGREEMENT_MISSING).astype(str)
+
+
+def build_eval_frame(predictions: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataFrame:
+
     """
-    Build boolean prediction-set mask of shape (n_samples, 2).
-    """
-
-    return probabilities >= probability_threshold
-
-
-def format_prediction_set(mask_row: np.ndarray) -> str:
-   
-    """
-    Convert one boolean mask into a readable set string.
-    """
-
-    labels = [LABEL_NAMES[idx] for idx, include in enumerate(mask_row) if include]
-    if not labels:
-        return "{}"
-    return "{" + ", ".join(labels) + "}"
-
-
-def fit_lac_conformal(
-    calibration_df: pd.DataFrame,
-    alpha: float,
-) -> tuple[float, float]:
-    
-    """
-    Fit split-conformal LAC on the calibration split.
-
-    Returns:
-        q_hat, probability_threshold
+    Predictions of one (split, condition) with scores and grouping columns:
+    score_0 / score_1 = 1 - p_y, domain, agreement bucket, length bucket of the (degraded) text.
     """
 
-    probabilities = extract_probability_matrix(calibration_df)
-    true_labels = calibration_df["label"].to_numpy(dtype=int)
+    out = predictions.merge(metadata[["id", "domain", "confidence"]], on="id", how="left", validate="one_to_one")
+    assert len(out) == len(predictions) and out["domain"].notna().all()
 
-    scores = compute_lac_scores(
-        probabilities=probabilities,
-        true_labels=true_labels,
-    )
-    q_hat = compute_conformal_quantile(scores=scores, alpha=alpha)
-    probability_threshold = compute_probability_threshold(q_hat=q_hat)
-
-    return q_hat, probability_threshold
+    out["score_0"] = 1.0 - out["prob_not_stress"].astype(np.float64)
+    out["score_1"] = 1.0 - out["prob_stress"].astype(np.float64)
+    out["agreement"] = agreement_bucket(out["confidence"])
+    out["length_bucket"] = length_bucket(out["n_words"])
+    return out.reset_index(drop=True)
 
 
-def build_conformal_prediction_frame(
-    df: pd.DataFrame,
-    alpha: float,
-    q_hat: float,
-    probability_threshold: float,
-) -> pd.DataFrame:
-    
+def true_class_scores(frame: pd.DataFrame) -> np.ndarray:
+    return np.where(frame["label"].to_numpy() == 1, frame["score_1"].to_numpy(), frame["score_0"].to_numpy())
+
+
+def jitter_seed(base_seed: int, resplit_id: int | str) -> int:
+    digest = hashlib.sha256(f"{base_seed}|{resplit_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def group_keys(frame: pd.DataFrame, group_columns: list[str], candidate_class: int | None) -> list[tuple]:
+    columns = [frame[column].tolist() for column in group_columns]
+    if candidate_class is None:
+        return [tuple(values) for values in zip(*columns)] if columns else [()] * len(frame)
+    return [(*values, candidate_class) for values in zip(*columns)] if columns else [(candidate_class,)] * len(frame)
+
+
+def predict_sets(
+        calibration: pd.DataFrame,
+        test: pd.DataFrame,
+        method: str,
+        alpha: float,
+        jitter: np.random.Generator | None = None,
+        jitter_scale: float = 1e-9,
+) -> tuple[np.ndarray, int]:
+
     """
-    Add conformal set-valued outputs to a copy of the original prediction DataFrame.
+    Prediction sets (n_test x 2 boolean) of one method; class y is included if s(x, y) <= threshold of its group.
+    Groups without calibration examples get +inf. Returns the sets and the number of +inf thresholds used.
+    Optional jitter (appendix tie-breaking): U(0, jitter_scale) added to every calibration and test score.
     """
 
-    out = df.copy()
-    probabilities = extract_probability_matrix(out)
-    prediction_set_mask = build_prediction_set_mask(
-        probabilities=probabilities,
-        probability_threshold=probability_threshold,
-    )
+    spec = METHODS[method]
+    group_columns = spec["group_columns"]
 
-    set_sizes = prediction_set_mask.sum(axis=1).astype(int)
-    row_idx = np.arange(len(out))
-    true_labels = out["label"].to_numpy(dtype=int)
-    contains_true = prediction_set_mask[row_idx, true_labels].astype(int)
+    calibration_scores = true_class_scores(calibration)
+    test_scores = test[["score_0", "score_1"]].to_numpy(dtype=np.float64)
+    if jitter is not None:
+        calibration_scores = calibration_scores + jitter.uniform(0, jitter_scale, size=calibration_scores.shape)
+        test_scores = test_scores + jitter.uniform(0, jitter_scale, size=test_scores.shape)
 
-    singleton_pred_label_id = np.full(len(out), fill_value=-1, dtype=int)
-    singleton_rows = set_sizes == 1
-    if np.any(singleton_rows):
-        singleton_pred_label_id[singleton_rows] = np.argmax(
-            prediction_set_mask[singleton_rows],
-            axis=1,
-        )
+    calibration_labels = calibration["label"].to_numpy()
+    if spec["by_class"]:
+        calibration_keys = group_keys(calibration, group_columns, None)
+        calibration_keys = [(*key, label) for key, label in zip(calibration_keys, calibration_labels)]
+    else:
+        calibration_keys = group_keys(calibration, group_columns, None)
 
-    singleton_pred_label_name = [
-        LABEL_NAMES[idx] if idx in LABEL_NAMES else None
-        for idx in singleton_pred_label_id
-    ]
+    scores_by_key: dict[tuple, list[float]] = {}
+    for key, score in zip(calibration_keys, calibration_scores):
+        scores_by_key.setdefault(key, []).append(score)
 
-    out["alpha"] = float(alpha)
-    out["target_coverage"] = float(1.0 - alpha)
-    out["q_hat"] = float(q_hat)
-    out["probability_threshold"] = float(probability_threshold)
+    sets = np.zeros((len(test), 2), dtype=bool)
+    infinite_keys: set[tuple] = set()
+    candidate_classes = [RISK_CLASS] if spec["risk_only"] else [0, 1]
 
-    out["prediction_set"] = [
-        format_prediction_set(mask_row) for mask_row in prediction_set_mask
-    ]
-    out["set_size"] = set_sizes
-    out["contains_true"] = contains_true
-    out["is_singleton"] = (set_sizes == 1).astype(int)
-    out["is_empty_set"] = (set_sizes == 0).astype(int)
-    out["is_full_set"] = (set_sizes == 2).astype(int)
+    for candidate in candidate_classes:
+        keys = group_keys(test, group_columns, candidate if spec["by_class"] else None)
+        thresholds = {
+            key: conformal_threshold(np.asarray(scores_by_key.get(key, [])), alpha) for key in set(keys)
+        }
+        infinite_keys |= {key for key, threshold in thresholds.items() if math.isinf(threshold)}
+        sets[:, candidate] = test_scores[:, candidate] <= np.array([thresholds[key] for key in keys])
 
-    out["singleton_pred_label_id"] = singleton_pred_label_id
-    out["singleton_pred_label"] = singleton_pred_label_name
+    if spec["risk_only"]:
+        # M5 screening: flag -> {risk}; otherwise -> {not risk}.
+        sets[:, 1 - RISK_CLASS] = ~sets[:, RISK_CLASS]
 
+    return sets, len(infinite_keys)
+
+
+def indicator_frame(sets: np.ndarray, labels: np.ndarray) -> pd.DataFrame:
+
+    """
+    Per-example indicators. Triage: {not risk} -> dismiss, {risk} -> flag, full or empty -> refer to a human.
+    workload = not dismissed (flag + refer); uncertainty_referral = full or empty set.
+    """
+
+    size = sets.sum(axis=1)
+    flag = sets[:, RISK_CLASS] & ~sets[:, 1 - RISK_CLASS]
+    dismiss = sets[:, 1 - RISK_CLASS] & ~sets[:, RISK_CLASS]
+    return pd.DataFrame({
+        "covered": sets[np.arange(len(labels)), labels],
+        "set_size": size,
+        "singleton": size == 1,
+        "empty": size == 0,
+        "full": size == 2,
+        "flag": flag,
+        "dismiss": dismiss,
+        "workload": ~dismiss,
+        "uncertainty_referral": (size == 0) | (size == 2),
+    }).astype(float)
+
+
+def summarize_indicators(indicators: pd.DataFrame, labels: np.ndarray) -> dict[str, float]:
+
+    """
+    Overall means plus class-conditional means (suffix _0 / _1). c0, c1 = class coverage;
+    sensitivity = share of risk cases not dismissed.
+    """
+
+    out: dict[str, float] = {"n": len(labels)}
+    out.update(indicators.mean().to_dict())
+    for label in [0, 1]:
+        in_class = labels == label
+        out[f"n_{label}"] = int(in_class.sum())
+        for name, value in indicators[in_class].mean().items():
+            out[f"{name}_{label}"] = float(value)
+
+    out["coverage"] = out.pop("covered")
+    out["c0"] = out.pop("covered_0")
+    out["c1"] = out.pop("covered_1")
+    out["sensitivity"] = out[f"workload_{RISK_CLASS}"]
     return out
 
 
-def summarize_conformal_predictions(
-    prediction_df: pd.DataFrame,
-    split_name: str,
-    alpha: float,
-    method_name: str = "lac",
-) -> dict[str, Any]:
-    
-    """
-    Compute summary conformal metrics for one split.
-    """
-    
-    if prediction_df.empty:
-        raise ValueError("prediction_df is empty.")
+def reweight(summary: dict[str, float], prevalence: float) -> dict[str, float]:
 
+    """
+    Metric at risk prevalence pi: pi * metric(risk class) + (1 - pi) * metric(non-risk class).
+    """
+
+    class_metrics = {"coverage": ("c0", "c1")} | {name: (f"{name}_0", f"{name}_1") for name in INDICATORS if name != "covered"}
     return {
-        "method": method_name,
-        "split": split_name,
-        "alpha": float(alpha),
-        "target_coverage": float(1.0 - alpha),
-        "n_examples": int(len(prediction_df)),
-        "q_hat": float(prediction_df["q_hat"].iloc[0]),
-        "probability_threshold": float(prediction_df["probability_threshold"].iloc[0]),
-        "empirical_coverage": float(prediction_df["contains_true"].mean()),
-        "avg_set_size": float(prediction_df["set_size"].mean()),
-        "singleton_rate": float(prediction_df["is_singleton"].mean()),
-        "empty_rate": float(prediction_df["is_empty_set"].mean()),
-        "full_set_rate": float(prediction_df["is_full_set"].mean()),
+        name: prevalence * summary[risk] + (1 - prevalence) * summary[non_risk]
+        for name, (non_risk, risk) in class_metrics.items()
     }
+
+
+def group_summaries(
+        indicators: pd.DataFrame,
+        test: pd.DataFrame,
+        calibration: pd.DataFrame,
+        alpha: float,
+) -> pd.DataFrame:
+
+    """
+    Metrics per group (all, class, domain, domain x class, agreement bucket), each with n_calibration,
+    n_test and the reference band for coverage at those sizes.
+    """
+
+    labels = test["label"].to_numpy()
+    groupings = {
+        "all": [],
+        "class": ["label"],
+        "domain": ["domain"],
+        "domain_class": ["domain", "label"],
+        "agreement": ["agreement"],
+    }
+
+    rows = []
+    for group_type, columns in groupings.items():
+        if columns:
+            # A single column is passed as a scalar so group keys are scalars, not 1-tuples.
+            by = columns[0] if len(columns) == 1 else columns
+            test_groups = test.groupby(by, sort=True).indices
+            calibration_sizes = calibration.groupby(by).size()
+        else:
+            test_groups = {"all": np.arange(len(test))}
+            calibration_sizes = pd.Series({"all": len(calibration)})
+
+        for group, index in test_groups.items():
+            n_calibration = int(calibration_sizes.get(group, 0))
+            band_low, band_high = reference_band(n_calibration, len(index), alpha)
+            group_name = "|".join(str(part) for part in group) if isinstance(group, tuple) else str(group)
+            rows.append({
+                "group_type": group_type,
+                "group": group_name,
+                "n_calibration": n_calibration,
+                "band_low": band_low,
+                "band_high": band_high,
+                **summarize_indicators(indicators.iloc[index], labels[index]),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def worst_groups(groups: pd.DataFrame) -> dict[str, Any]:
+
+    """
+    Worst domain and worst (domain, class) by coverage, with group sizes and reference bands.
+    """
+
+    out: dict[str, Any] = {}
+    for group_type in ["domain", "domain_class"]:
+        worst = groups[groups["group_type"] == group_type].sort_values(["coverage", "group"]).iloc[0]
+        prefix = f"worst_{group_type}"
+        out[prefix] = worst["group"]
+        out[f"{prefix}_coverage"] = float(worst["coverage"])
+        out[f"{prefix}_n_test"] = int(worst["n"])
+        out[f"{prefix}_n_calibration"] = int(worst["n_calibration"])
+        out[f"{prefix}_band_low"] = float(worst["band_low"])
+        out[f"{prefix}_band_high"] = float(worst["band_high"])
+    return out
+
+
+def calibration_frame(
+        method: str,
+        calibration_by_condition: dict[str, pd.DataFrame],
+        mix_calibration: pd.DataFrame,
+        test_condition: str,
+) -> pd.DataFrame:
+
+    """
+    Calibration rows a method uses for a test condition.
+    """
+
+    source = METHODS[method]["calibration"]
+    if source == "clean":
+        return calibration_by_condition["clean"]
+    if source == "matched":
+        return calibration_by_condition[test_condition]
+    return mix_calibration
+
+
+def build_mix_calibration(
+        calibration_by_condition: dict[str, pd.DataFrame],
+        mix_assignment: pd.DataFrame,
+) -> pd.DataFrame:
+
+    """
+    M3-mix calibration: for each calibration example, its row in the assigned condition.
+    """
+
+    stacked = pd.concat(calibration_by_condition.values(), ignore_index=True)
+    out = mix_assignment.merge(stacked, on=["id", "condition"], how="left", validate="one_to_one")
+    assert out["score_1"].notna().all(), "mix assignment refers to a missing condition"
+    return out

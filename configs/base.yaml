@@ -73,7 +73,13 @@ encoders:
   occlusion_models: ["distilbert", "roberta"]
 
 conformal:
-  method: "lac"
-  alpha_values: [0.1, 0.05]
+  # LAC score s(x, y) = 1 - p_y(x); threshold = k-th smallest calibration score, k = ceil((n + 1)(1 - alpha)),
+  # +inf if k > n. Methods (src/conformal.METHODS): M0, M1, M2, M5 on clean calibration; M3 on same-condition
+  # calibration; M3-mix on the mix assignment with (length bucket, class) groups.
+  alpha_values: [0.1, 0.05]   # 0.10 main, 0.05 appendix
+  prevalence_grid: [0.05, 0.10, 0.20, 0.35, 0.52]
+  main_prevalence: 0.10
+  # Appendix tie-breaking: U(0, tie_jitter) added to float64 scores, generator seeded by hash(seed, resplit_id).
+  tie_jitter: 1.0e-9
 
   
