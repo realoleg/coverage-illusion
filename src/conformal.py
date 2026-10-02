@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import minimize_scalar
+from scipy.special import expit
 from scipy.stats import betabinom
 
 from src.degradations import length_bucket
@@ -345,6 +347,97 @@ def worst_groups(groups: pd.DataFrame) -> dict[str, Any]:
         out[f"{prefix}_band_low"] = float(worst["band_low"])
         out[f"{prefix}_band_high"] = float(worst["band_high"])
     return out
+
+
+def uncorrected_threshold(scores: np.ndarray, alpha: float) -> float:
+
+    """
+    B1: k'-th smallest score with k' = ceil(n (1 - alpha)), no finite-sample correction
+    (the smallest threshold whose in-sample coverage is at least 1 - alpha).
+    """
+
+    n = len(scores)
+    if n == 0:
+        return math.inf
+    k = math.ceil(n * (1 - Fraction(str(alpha))))
+    return float(np.sort(scores)[k - 1])
+
+
+def b1_sets(validation: pd.DataFrame, test: pd.DataFrame, alpha: float) -> np.ndarray:
+
+    """
+    B1: threshold on the risk score from validation risk cases (no correction); flag -> {risk}, else {not risk}.
+    """
+
+    risk_scores = validation.loc[validation["label"] == RISK_CLASS, f"score_{RISK_CLASS}"].to_numpy(dtype=np.float64)
+    threshold = uncorrected_threshold(risk_scores, alpha)
+
+    sets = np.zeros((len(test), 2), dtype=bool)
+    sets[:, RISK_CLASS] = test[f"score_{RISK_CLASS}"].to_numpy(dtype=np.float64) <= threshold
+    sets[:, 1 - RISK_CLASS] = ~sets[:, RISK_CLASS]
+    return sets
+
+
+def logit_margin(frame: pd.DataFrame) -> np.ndarray:
+    return frame["logit_stress"].to_numpy(dtype=np.float64) - frame["logit_not_stress"].to_numpy(dtype=np.float64)
+
+
+def fit_temperature(margins: np.ndarray, labels: np.ndarray) -> float:
+
+    """
+    Temperature T minimizing the binary NLL of sigmoid(margin / T) (bounded search over log T in [-3, 3]).
+    """
+
+    signed = np.where(labels == 1, margins, -margins)
+
+    def nll(log_temperature: float) -> float:
+        return float(np.mean(np.logaddexp(0.0, -signed / np.exp(log_temperature))))
+
+    return float(np.exp(minimize_scalar(nll, bounds=(-3.0, 3.0), method="bounded").x))
+
+
+def b2_sets(margins: np.ndarray, temperature: float, n_refuse: int) -> np.ndarray:
+
+    """
+    B2: temperature-scaled probabilities; the n_refuse cases with the lowest max-probability are refused
+    (full set -> refer), the others get {argmax} (ties at 0.5 -> class 0, as elsewhere).
+    """
+
+    prob_risk = expit(margins / temperature)
+    confidence = np.maximum(prob_risk, 1.0 - prob_risk)
+    refused = np.argsort(confidence, kind="stable")[:n_refuse]
+
+    sets = np.zeros((len(margins), 2), dtype=bool)
+    predicted = (prob_risk > 0.5).astype(int)
+    sets[np.arange(len(margins)), predicted] = True
+    sets[refused] = True
+    return sets
+
+
+def calibration_metrics(prob_risk: np.ndarray, labels: np.ndarray, n_bins: int = 15) -> dict[str, float]:
+
+    """
+    Calibration of p(stress): Brier, NLL, ECE with n_bins equal-width bins on [0, 1] (1.0 in the last bin)
+    and with n_bins equal-mass bins (sorted probabilities split into n_bins nearly equal parts).
+    """
+
+    prob_risk = prob_risk.astype(np.float64)
+    labels = labels.astype(np.float64)
+    clipped = np.clip(prob_risk, 1e-15, 1 - 1e-15)
+
+    def ece(bins: list[np.ndarray]) -> float:
+        return float(sum(len(b) * abs(labels[b].mean() - prob_risk[b].mean()) for b in bins if len(b)) / len(labels))
+
+    width_index = np.minimum((prob_risk * n_bins).astype(int), n_bins - 1)
+    width_bins = [np.flatnonzero(width_index == b) for b in range(n_bins)]
+    mass_bins = np.array_split(np.argsort(prob_risk, kind="stable"), n_bins)
+
+    return {
+        "brier": float(np.mean((prob_risk - labels) ** 2)),
+        "nll": float(-np.mean(labels * np.log(clipped) + (1 - labels) * np.log(1 - clipped))),
+        f"ece_width{n_bins}": ece(width_bins),
+        f"ece_mass{n_bins}": ece(mass_bins),
+    }
 
 
 def calibration_frame(

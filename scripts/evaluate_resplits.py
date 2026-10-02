@@ -10,25 +10,27 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 from scipy.stats import ks_2samp
-from sklearn.model_selection import StratifiedGroupKFold
 
 from src.conformal import (
     INDICATORS,
     METHODS,
+    b1_sets,
+    b2_sets,
     build_eval_frame,
     calibration_frame,
+    fit_temperature,
     group_summaries,
     indicator_frame,
+    logit_margin,
     predict_sets,
     reference_band,
     reweight,
     summarize_indicators,
     true_class_scores,
 )
-from src.degradations import make_stream
+from src.resplits import ensemble_predictions, load_pool, make_replicates, pool_frames
 from src.utils import load_yaml_config, now_iso
 
-PROTOCOLS = ["resplit", "official_test"]
 LONG_GROUP_TYPES = ["domain", "domain_class", "agreement"]
 CLASS_INDICATORS = [name for name in INDICATORS if name != "covered"]
 LONG_METRICS = (
@@ -45,12 +47,14 @@ SUMMARY_METRICS = [
     "workload", "uncertainty_referral", "n_infinite_thresholds", "n_calibration", "n",
 ]
 PER_SEED_METRICS = ["coverage", "c0", "c1", "sensitivity", "workload"]
+BASELINE_METHODS = ["B1", "B2"]
+ENSEMBLE_METHODS = ["M0", "M1"]
 KEYS = ["dataset", "model", "protocol", "condition", "method", "calibration", "alpha"]
 DONE_WHEN_TOLERANCE = 0.01
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Step 6: resplits / official-test bootstraps, long table, aggregates.")
+    parser = argparse.ArgumentParser(description="Resplits / official-test bootstraps of every run: long table, aggregates.")
     parser.add_argument(
         "--config",
         type=str,
@@ -58,75 +62,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config.",
     )
     return parser.parse_args()
-
-
-def make_replicates(
-        pool: pd.DataFrame,
-        n_replicates: int,
-        n_folds: int,
-        base_seed: int,
-) -> dict[str, list[tuple[np.ndarray, np.ndarray]]]:
-
-    """
-    (calibration positions, test positions) in the pool (calibration rows, then test rows) for both protocols.
-    resplit r: StratifiedGroupKFold(n_folds, shuffle=True, random_state=r) by post, fold 0 -> calibration, fold 1 -> test.
-    official_test b: calibration posts drawn with replacement (all their rows), test = the official test.
-    """
-
-    labels = pool["label"].to_numpy()
-    posts = pool["post_id"].to_numpy()
-    replicates: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {protocol: [] for protocol in PROTOCOLS}
-
-    for r in range(n_replicates):
-        splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=r)
-        folds = [test_index for _, test_index in splitter.split(pool, labels, groups=posts)]
-        replicates["resplit"].append((np.sort(folds[0]), np.sort(folds[1])))
-
-    calibration_positions = np.flatnonzero(pool["split"].to_numpy() == "calibration")
-    test_positions = np.flatnonzero(pool["split"].to_numpy() == "test")
-    positions_by_post = pd.Series(calibration_positions).groupby(posts[calibration_positions]).apply(np.asarray)
-    calibration_posts = positions_by_post.index.to_numpy()
-
-    for b in range(n_replicates):
-        rng = make_stream(base_seed, b, "bootstrap")
-        drawn = rng.choice(calibration_posts, size=len(calibration_posts), replace=True)
-        calibration = np.concatenate(positions_by_post.loc[drawn].to_numpy())
-        replicates["official_test"].append((calibration, test_positions))
-
-    return replicates
-
-
-def pool_frames(
-        predictions: pd.DataFrame,
-        pool: pd.DataFrame,
-        mix_assignment: pd.DataFrame,
-        conditions: list[str],
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-
-    """
-    Evaluation frames of the pool (calibration rows, then test rows) for every condition,
-    and the M3-mix frame (each example in its assigned condition).
-    """
-
-    metadata = pool[["id", "domain", "confidence"]]
-    frames = {}
-    for condition in conditions:
-        rows = predictions[predictions["condition"] == condition]
-        frame = pd.concat(
-            [build_eval_frame(rows[rows["split"] == name], metadata) for name in ["calibration", "test"]],
-            ignore_index=True,
-        )
-        assert np.array_equal(frame["id"].to_numpy(), pool["id"].to_numpy())
-        frames[condition] = frame
-
-    assert np.array_equal(mix_assignment["id"].to_numpy(), pool["id"].to_numpy())
-    assigned = mix_assignment["condition"].to_numpy()
-    mix = pd.concat(
-        [frames[condition].assign(position=np.arange(len(pool)))[assigned == condition] for condition in conditions]
-    ).sort_values("position").drop(columns="position").reset_index(drop=True)
-    assert np.array_equal(mix["id"].to_numpy(), pool["id"].to_numpy())
-
-    return frames, mix
 
 
 def evaluate_run(task: dict[str, Any]) -> dict[str, Any]:
@@ -137,8 +72,17 @@ def evaluate_run(task: dict[str, Any]) -> dict[str, Any]:
 
     start = time.perf_counter()
     model, seed = task["model"], task["seed"]
-    predictions = pd.read_csv(task["predictions_path"])
+    if len(task["predictions_paths"]) > 1:
+        predictions = ensemble_predictions(task["predictions_paths"])
+    else:
+        predictions = pd.read_csv(task["predictions_paths"][0])
     frames, mix = pool_frames(predictions, task["pool"], task["mix_assignment"], task["conditions"])
+
+    # B1 threshold and B2 temperature come from the clean validation split (outside the pool).
+    validation = build_eval_frame(predictions[predictions["split"] == "validation"], task["validation_metadata"])
+    temperature = None
+    if "B2" in task["methods"]:
+        temperature = fit_temperature(logit_margin(validation), validation["label"].to_numpy())
 
     long_rows: list[dict[str, Any]] = []
     group_tables: list[pd.DataFrame] = []
@@ -154,18 +98,33 @@ def evaluate_run(task: dict[str, Any]) -> dict[str, Any]:
             for condition in task["conditions"]:
                 test = frames[condition].iloc[test_positions]
                 labels = test["label"].to_numpy()
+                refusals: dict[float, int] = {}
 
-                for method, spec in METHODS.items():
-                    calibration = calibration_frame(method, calibration_by_condition, mix_calibration, condition)
+                for method in task["methods"]:
+                    if method in METHODS:
+                        calibration = calibration_frame(method, calibration_by_condition, mix_calibration, condition)
+                        calibration_name = METHODS[method]["calibration"]
+                    else:
+                        # B1 / B2 are tuned on validation; sizes and group bands use the replicate's clean calibration.
+                        calibration = calibration_by_condition["clean"]
+                        calibration_name = "validation"
                     calibration_labels = calibration["label"].to_numpy()
                     keys = {
                         "dataset": task["dataset"], "model": model, "seed": seed, "protocol": protocol,
                         "replicate": replicate, "condition": condition, "method": method,
-                        "calibration": spec["calibration"],
+                        "calibration": calibration_name,
                     }
 
                     for alpha in task["alphas"]:
-                        sets, n_infinite = predict_sets(calibration, test, method, alpha)
+                        if method in METHODS:
+                            sets, n_infinite = predict_sets(calibration, test, method, alpha)
+                        elif method == "B1":
+                            sets, n_infinite = b1_sets(validation, test, alpha), 0
+                        else:
+                            # B2 refuses exactly as many cases as M1 refers (full or empty sets) on this test.
+                            sets, n_infinite = b2_sets(logit_margin(test), temperature, refusals[alpha]), 0
+                        if method == "M1":
+                            refusals[alpha] = int((sets.sum(axis=1) != 1).sum())
                         indicators = indicator_frame(sets, labels)
                         summary = summarize_indicators(indicators, labels)
                         long_rows.append({
@@ -199,7 +158,7 @@ def evaluate_run(task: dict[str, Any]) -> dict[str, Any]:
     ks = ks_2samp(scores[is_calibration], scores[~is_calibration])
 
     return {
-        "model": model, "seed": seed,
+        "model": model, "seed": seed, "temperature": temperature,
         "ks_statistic": float(ks.statistic), "ks_pvalue": float(ks.pvalue),
         "n_calibration": int(is_calibration.sum()), "n_test": int((~is_calibration).sum()),
         "long_rows": len(long_table), "group_rows": len(group_table),
@@ -211,6 +170,7 @@ def add_band_flags(table: pd.DataFrame) -> pd.DataFrame:
 
     """
     Per replicate: is coverage (c0, c1) below / inside / above its reference band at that replicate's sizes.
+    Sensitivity uses the class-1 band at the replicate's sizes for every method (also B1 / B2).
     Adds the columns in place.
     """
 
@@ -219,6 +179,7 @@ def add_band_flags(table: pd.DataFrame) -> pd.DataFrame:
         ("coverage", "n_calibration", "n"),
         ("c0", "n_calibration_0", "n_0"),
         ("c1", "n_calibration_1", "n_1"),
+        ("sensitivity", "n_calibration_1", "n_1"),
     ]:
         sizes = out[[n_calibration, n_test, "alpha"]].drop_duplicates()
         bands = {
@@ -276,13 +237,15 @@ def aggregate_model(long_paths: list[Path], group_paths: list[Path], prevalence_
     for column in KEYS:
         long_table[column] = long_table[column].astype(str) if column != "alpha" else long_table[column]
 
-    band_metrics = [f"{m}_{flag}" for m in ["coverage", "c0", "c1"] for flag in ["below_band", "in_band", "above_band"]]
+    band_metrics = [f"{m}_{flag}" for m in ["coverage", "c0", "c1", "sensitivity"] for flag in ["below_band", "in_band", "above_band"]]
     prevalence_metrics = [
         f"{name}_pi={p}" for p in prevalence_grid
         for name in ["coverage", "workload_per_1000", "uncertainty_referrals_per_1000"]
     ]
     overall = describe(long_table, KEYS, SUMMARY_METRICS + band_metrics + prevalence_metrics).assign(seed="all")
-    per_seed_metrics = PER_SEED_METRICS + ["workload_per_1000_pi=0.1", "coverage_below_band", "c1_below_band"]
+    per_seed_metrics = PER_SEED_METRICS + [
+        "workload_per_1000_pi=0.1", "coverage_below_band", "c1_below_band", "sensitivity_below_band", "sensitivity_above_band",
+    ]
     per_seed = describe(long_table.assign(seed=long_table["seed"].astype(str)), KEYS + ["seed"], per_seed_metrics)
     summary = pd.concat([overall, per_seed], ignore_index=True)
 
@@ -329,28 +292,36 @@ def main() -> None:
     (output_dir / "long").mkdir(parents=True, exist_ok=True)
     (output_dir / "groups").mkdir(parents=True, exist_ok=True)
 
-    pool = pd.concat(
-        [pd.read_csv(data_dir / f"{name}.csv").assign(split=name) for name in ["calibration", "test"]],
-        ignore_index=True,
-    )[["id", "post_id", "label", "domain", "confidence", "split"]]
+    pool = load_pool(data_dir)
+    validation_metadata = pd.read_csv(data_dir / "validation.csv")[["id", "domain", "confidence"]]
     mix_assignment = pd.read_csv(data_dir / f"{dataset}_mix_assignment.csv")
 
     replicates = make_replicates(pool, int(evaluation["n_replicates"]), int(evaluation["resplit_folds"]), base_seed)
     print(f"[{now_iso()}] Built {len(replicates['resplit'])} resplits and {len(replicates['official_test'])} bootstraps", flush=True)
 
-    tasks = []
+    common = {
+        "dataset": dataset, "pool": pool, "validation_metadata": validation_metadata,
+        "mix_assignment": mix_assignment, "conditions": conditions, "alphas": alphas, "replicates": replicates,
+        "n_group_replicates": int(evaluation["n_group_replicates"]),
+    }
+    runs_by_model: dict[str, list[Path]] = {}
     for predictions_path in sorted(runs_dir.glob("*/seed_*/predictions.csv.gz")):
         if "prob_stress" not in pd.read_csv(predictions_path, nrows=1).columns:
             continue  # LinearSVC has no probabilities and is not part of conformal prediction.
-        model = predictions_path.parent.parent.name
-        seed = int(predictions_path.parent.name.removeprefix("seed_"))
-        tasks.append({
-            "dataset": dataset, "model": model, "seed": seed, "predictions_path": predictions_path,
-            "pool": pool, "mix_assignment": mix_assignment, "conditions": conditions, "alphas": alphas,
-            "replicates": replicates, "n_group_replicates": int(evaluation["n_group_replicates"]),
-            "long_path": output_dir / "long" / f"{dataset}_{model}_seed{seed}.parquet",
-            "groups_path": output_dir / "groups" / f"{dataset}_{model}_seed{seed}.parquet",
-        })
+        runs_by_model.setdefault(predictions_path.parent.parent.name, []).append(predictions_path)
+
+    tasks = []
+    for model, paths in runs_by_model.items():
+        for path in paths:
+            tasks.append({**common, "model": model, "seed": path.parent.name.removeprefix("seed_"),
+                          "predictions_paths": [path], "methods": [*METHODS, *BASELINE_METHODS]})
+        if len(paths) > 1:
+            # B3: ensemble of the model's seeds (mean probability), M0 and M1 on top.
+            tasks.append({**common, "model": f"{model}_ensemble", "seed": "ensemble",
+                          "predictions_paths": paths, "methods": ENSEMBLE_METHODS})
+    for task in tasks:
+        task["long_path"] = output_dir / "long" / f"{dataset}_{task['model']}_seed{task['seed']}.parquet"
+        task["groups_path"] = output_dir / "groups" / f"{dataset}_{task['model']}_seed{task['seed']}.parquet"
 
     with ProcessPoolExecutor(max_workers=int(evaluation["workers"])) as executor:
         run_results = list(executor.map(evaluate_run, tasks))
@@ -373,7 +344,7 @@ def main() -> None:
         output_dir / f"{dataset}_ks.csv", index=False
     )
 
-    # Done-when: clean M0 median coverage over resplits within 0.90 +/- 0.01 for every model (all seeds pooled).
+    # Step-6 done-when: clean M0 median coverage over resplits within 0.90 +/- 0.01 for every model (all seeds pooled).
     report_rows: list[tuple[str, str, str, Any]] = []
     main_alpha = alphas[0]
     m0_clean = summary[
@@ -401,6 +372,8 @@ def main() -> None:
     ]
     for result in run_results:
         name = f"{result['model']}/seed={result['seed']}"
+        if result["temperature"] is not None:
+            report_rows.append(("temperature", name, "validation_nll_temperature", round(result["temperature"], 4)))
         report_rows += [
             ("ks_descriptive", name, "ks_statistic", round(result["ks_statistic"], 4)),
             ("ks_descriptive", name, "ks_pvalue", round(result["ks_pvalue"], 4)),
@@ -410,7 +383,7 @@ def main() -> None:
     report_rows.append(("runtime", "all", "total_minutes", round((time.perf_counter() - start) / 60, 1)))
 
     report = pd.DataFrame(report_rows, columns=["section", "scope", "key", "value"])
-    report.to_csv(output_dir / "step6_report.csv", index=False)
+    report.to_csv(output_dir / "evaluation_report.csv", index=False)
     print(report[report["section"] != "runtime"].to_string(index=False))
 
 
