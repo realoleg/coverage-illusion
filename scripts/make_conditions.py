@@ -185,21 +185,24 @@ def build_report(
                 letters = sum(char.lower() in QWERTY_NEIGHBORS for text in originals for char in text)
                 rows.append(("rate", split_name, f"{condition}.changed_letter_share", round(changed / letters, 4)))
 
-    calibration = splits["calibration"][["id", "label"]].merge(mix, on="id")
-    mixed = calibration.merge(
-        texts[texts["split"] == "calibration"][["id", "condition", "length_bucket"]],
-        on=["id", "condition"],
-    )
-    assert len(mixed) == len(splits["calibration"])
+    # Mix groups for the original calibration split and for the whole pool (resplits draw calibration from the pool).
+    pool = pd.concat([splits[name][["id", "label"]].assign(split=name) for name in splits], ignore_index=True)
+    for scope, scope_splits in [("calibration", ["calibration"]), ("pool", list(splits))]:
+        members = pool[pool["split"].isin(scope_splits)].merge(mix, on=["id", "split"])
+        mixed = members.merge(
+            texts[["id", "split", "condition", "length_bucket"]],
+            on=["id", "split", "condition"],
+        )
+        assert len(mixed) == len(members) == int(pool["split"].isin(scope_splits).sum())
 
-    for condition in conditions:
-        rows.append(("mix", "calibration", f"n.{condition}", int((mixed["condition"] == condition).sum())))
-    group_sizes = mixed.groupby(["length_bucket", "label"]).size()
-    for bucket in LENGTH_BUCKET_LABELS:
-        for label in [0, 1]:
-            rows.append((
-                "mix", "calibration", f"bucket_label.{bucket}.{label}", int(group_sizes.get((bucket, label), 0))
-            ))
+        for condition in conditions:
+            rows.append(("mix", scope, f"n.{condition}", int((mixed["condition"] == condition).sum())))
+        group_sizes = mixed.groupby(["length_bucket", "label"]).size()
+        for bucket in LENGTH_BUCKET_LABELS:
+            for label in [0, 1]:
+                rows.append((
+                    "mix", scope, f"bucket_label.{bucket}.{label}", int(group_sizes.get((bucket, label), 0))
+                ))
 
     for split_name, key, value in check_rows:
         rows.append(("checks", split_name, key, value))
@@ -225,11 +228,16 @@ def main() -> None:
 
     build_condition_texts(splits, conditions, base_seed).to_csv(texts_path, index=False)
 
-    calibration_ids = splits["calibration"]["id"]
-    mix = pd.DataFrame({
-        "id": calibration_ids.to_numpy(),
-        "condition": assign_mix(calibration_ids, conditions, base_seed).to_numpy(),
-    })
+    # M3-mix assignment for the whole pool (calibration then test): resplits draw calibration from both.
+    # It is used on the calibration side only; test sides are evaluated in each condition separately.
+    mix = pd.concat([
+        pd.DataFrame({
+            "id": splits[name]["id"].to_numpy(),
+            "condition": assign_mix(splits[name]["id"], conditions, base_seed).to_numpy(),
+            "split": name,
+        })
+        for name in SPLITS
+    ], ignore_index=True)
     mix.to_csv(mix_path, index=False)
 
     # Checks and report use the texts read back from disk, exactly as the models will see them.

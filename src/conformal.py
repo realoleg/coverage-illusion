@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from fractions import Fraction
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -59,6 +60,7 @@ def conformal_threshold(scores: np.ndarray, alpha: float) -> float:
     return float(np.sort(scores)[k - 1])
 
 
+@lru_cache(maxsize=None)
 def reference_band(n_calibration: int, m_test: int, alpha: float, level: float = 0.95) -> tuple[float, float]:
 
     """
@@ -110,11 +112,37 @@ def jitter_seed(base_seed: int, resplit_id: int | str) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-def group_keys(frame: pd.DataFrame, group_columns: list[str], candidate_class: int | None) -> list[tuple]:
-    columns = [frame[column].tolist() for column in group_columns]
-    if candidate_class is None:
-        return [tuple(values) for values in zip(*columns)] if columns else [()] * len(frame)
-    return [(*values, candidate_class) for values in zip(*columns)] if columns else [(candidate_class,)] * len(frame)
+GROUP_TYPES = {
+    "all": [],
+    "class": ["label"],
+    "domain": ["domain"],
+    "domain_class": ["domain", "label"],
+    "agreement": ["agreement"],
+}
+
+
+def group_codes(
+        calibration: pd.DataFrame,
+        test: pd.DataFrame,
+        columns: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    
+    """
+    Joint integer codes of the group columns for calibration and test rows, and the sorted group names
+    ("|"-joined values; "all" without columns).
+    """
+
+    if not columns:
+        return np.zeros(len(calibration), dtype=int), np.zeros(len(test), dtype=int), np.array(["all"])
+
+    def keys(frame: pd.DataFrame) -> np.ndarray:
+        joined = frame[columns[0]].astype(str)
+        for column in columns[1:]:
+            joined = joined + "|" + frame[column].astype(str)
+        return joined.to_numpy()
+
+    codes, names = pd.factorize(np.concatenate([keys(calibration), keys(test)]), sort=True)
+    return codes[:len(calibration)], codes[len(calibration):], np.asarray(names)
 
 
 def predict_sets(
@@ -125,7 +153,7 @@ def predict_sets(
         jitter: np.random.Generator | None = None,
         jitter_scale: float = 1e-9,
 ) -> tuple[np.ndarray, int]:
-
+    
     """
     Prediction sets (n_test x 2 boolean) of one method; class y is included if s(x, y) <= threshold of its group.
     Groups without calibration examples get +inf. Returns the sets and the number of +inf thresholds used.
@@ -133,7 +161,6 @@ def predict_sets(
     """
 
     spec = METHODS[method]
-    group_columns = spec["group_columns"]
 
     calibration_scores = true_class_scores(calibration)
     test_scores = test[["score_0", "score_1"]].to_numpy(dtype=np.float64)
@@ -141,28 +168,26 @@ def predict_sets(
         calibration_scores = calibration_scores + jitter.uniform(0, jitter_scale, size=calibration_scores.shape)
         test_scores = test_scores + jitter.uniform(0, jitter_scale, size=test_scores.shape)
 
-    calibration_labels = calibration["label"].to_numpy()
+    calibration_groups, test_groups, names = group_codes(calibration, test, spec["group_columns"])
+    n_classes = 2 if spec["by_class"] else 1
+    calibration_keys = calibration_groups * n_classes
     if spec["by_class"]:
-        calibration_keys = group_keys(calibration, group_columns, None)
-        calibration_keys = [(*key, label) for key, label in zip(calibration_keys, calibration_labels)]
-    else:
-        calibration_keys = group_keys(calibration, group_columns, None)
+        calibration_keys = calibration_keys + calibration["label"].to_numpy()
 
-    scores_by_key: dict[tuple, list[float]] = {}
-    for key, score in zip(calibration_keys, calibration_scores):
-        scores_by_key.setdefault(key, []).append(score)
+    thresholds = np.array([
+        conformal_threshold(calibration_scores[calibration_keys == key], alpha)
+        for key in range(len(names) * n_classes)
+    ])
 
     sets = np.zeros((len(test), 2), dtype=bool)
-    infinite_keys: set[tuple] = set()
+    infinite_keys: set[int] = set()
     candidate_classes = [RISK_CLASS] if spec["risk_only"] else [0, 1]
 
     for candidate in candidate_classes:
-        keys = group_keys(test, group_columns, candidate if spec["by_class"] else None)
-        thresholds = {
-            key: conformal_threshold(np.asarray(scores_by_key.get(key, [])), alpha) for key in set(keys)
-        }
-        infinite_keys |= {key for key, threshold in thresholds.items() if math.isinf(threshold)}
-        sets[:, candidate] = test_scores[:, candidate] <= np.array([thresholds[key] for key in keys])
+        test_keys = test_groups * n_classes + (candidate if spec["by_class"] else 0)
+        used = np.unique(test_keys)
+        infinite_keys |= set(used[np.isinf(thresholds[used])].tolist())
+        sets[:, candidate] = test_scores[:, candidate] <= thresholds[test_keys]
 
     if spec["risk_only"]:
         # M5 screening: flag -> {risk}; otherwise -> {not risk}.
@@ -171,55 +196,90 @@ def predict_sets(
     return sets, len(infinite_keys)
 
 
-def indicator_frame(sets: np.ndarray, labels: np.ndarray) -> pd.DataFrame:
+def indicator_matrix(sets: np.ndarray, labels: np.ndarray) -> np.ndarray:
 
     """
-    Per-example indicators. Triage: {not risk} -> dismiss, {risk} -> flag, full or empty -> refer to a human.
-    workload = not dismissed (flag + refer); uncertainty_referral = full or empty set.
+    Per-example indicators (columns in INDICATORS order). Triage: {not risk} -> dismiss, {risk} -> flag,
+    full or empty -> refer to a human. workload = not dismissed (flag + refer); uncertainty_referral = full or empty set.
     """
 
     size = sets.sum(axis=1)
     flag = sets[:, RISK_CLASS] & ~sets[:, 1 - RISK_CLASS]
     dismiss = sets[:, 1 - RISK_CLASS] & ~sets[:, RISK_CLASS]
-    return pd.DataFrame({
-        "covered": sets[np.arange(len(labels)), labels],
-        "set_size": size,
-        "singleton": size == 1,
-        "empty": size == 0,
-        "full": size == 2,
-        "flag": flag,
-        "dismiss": dismiss,
-        "workload": ~dismiss,
-        "uncertainty_referral": (size == 0) | (size == 2),
-    }).astype(float)
+    return np.column_stack([
+        sets[np.arange(len(labels)), labels],
+        size,
+        size == 1,
+        size == 0,
+        size == 2,
+        flag,
+        dismiss,
+        ~dismiss,
+        (size == 0) | (size == 2),
+    ]).astype(np.float64)
+
+
+def indicator_frame(sets: np.ndarray, labels: np.ndarray) -> pd.DataFrame:
+    return pd.DataFrame(indicator_matrix(sets, labels), columns=INDICATORS)
+
+
+def summarize_codes(
+        matrix: np.ndarray,
+        labels: np.ndarray,
+        codes: np.ndarray,
+        n_groups: int,
+) -> list[dict[str, float]]:
+    
+    """
+    Per group: overall means of the indicators plus class-conditional means (suffix _0 / _1).
+    c0, c1 = class coverage; sensitivity = share of risk cases not dismissed. Empty classes give NaN.
+    All indicators are 0/1 or set sizes, so the sums are exact and the means do not depend on summation order.
+    """
+
+    counts = np.bincount(codes, minlength=n_groups)
+    sums = np.column_stack([np.bincount(codes, weights=matrix[:, j], minlength=n_groups) for j in range(matrix.shape[1])])
+    class_codes = codes * 2 + labels
+    class_counts = np.bincount(class_codes, minlength=2 * n_groups)
+    class_sums = np.column_stack([
+        np.bincount(class_codes, weights=matrix[:, j], minlength=2 * n_groups) for j in range(matrix.shape[1])
+    ])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        means = sums / counts[:, None]
+        class_means = class_sums / class_counts[:, None]
+
+    out = []
+    for group in range(n_groups):
+        summary: dict[str, float] = {"n": int(counts[group])}
+        summary.update({name: float(means[group, j]) for j, name in enumerate(INDICATORS)})
+        for label in [0, 1]:
+            row = 2 * group + label
+            summary[f"n_{label}"] = int(class_counts[row])
+            summary.update({f"{name}_{label}": float(class_means[row, j]) for j, name in enumerate(INDICATORS)})
+
+        summary["coverage"] = summary.pop("covered")
+        summary["c0"] = summary.pop("covered_0")
+        summary["c1"] = summary.pop("covered_1")
+        summary["sensitivity"] = summary[f"workload_{RISK_CLASS}"]
+        out.append(summary)
+
+    return out
 
 
 def summarize_indicators(indicators: pd.DataFrame, labels: np.ndarray) -> dict[str, float]:
 
     """
-    Overall means plus class-conditional means (suffix _0 / _1). c0, c1 = class coverage;
-    sensitivity = share of risk cases not dismissed.
+    Overall and class-conditional means of all examples (see summarize_codes).
     """
 
-    out: dict[str, float] = {"n": len(labels)}
-    out.update(indicators.mean().to_dict())
-    for label in [0, 1]:
-        in_class = labels == label
-        out[f"n_{label}"] = int(in_class.sum())
-        for name, value in indicators[in_class].mean().items():
-            out[f"{name}_{label}"] = float(value)
-
-    out["coverage"] = out.pop("covered")
-    out["c0"] = out.pop("covered_0")
-    out["c1"] = out.pop("covered_1")
-    out["sensitivity"] = out[f"workload_{RISK_CLASS}"]
-    return out
+    assert list(indicators.columns) == INDICATORS
+    return summarize_codes(indicators.to_numpy(), labels, np.zeros(len(labels), dtype=int), 1)[0]
 
 
 def reweight(summary: dict[str, float], prevalence: float) -> dict[str, float]:
 
     """
     Metric at risk prevalence pi: pi * metric(risk class) + (1 - pi) * metric(non-risk class).
+    Works on a dict of scalars or on a DataFrame of runs (column-wise).
     """
 
     class_metrics = {"coverage": ("c0", "c1")} | {name: (f"{name}_0", f"{name}_1") for name in INDICATORS if name != "covered"}
@@ -234,44 +294,35 @@ def group_summaries(
         test: pd.DataFrame,
         calibration: pd.DataFrame,
         alpha: float,
+        group_types: list[str] | None = None,
 ) -> pd.DataFrame:
-
+    
     """
-    Metrics per group (all, class, domain, domain x class, agreement bucket), each with n_calibration,
-    n_test and the reference band for coverage at those sizes.
+    Metrics per group (all, class, domain, domain x class, agreement bucket) for the groups present in test,
+    each with n_calibration, n_test and the reference band for coverage at those sizes.
     """
 
+    assert list(indicators.columns) == INDICATORS
+    matrix = indicators.to_numpy()
     labels = test["label"].to_numpy()
-    groupings = {
-        "all": [],
-        "class": ["label"],
-        "domain": ["domain"],
-        "domain_class": ["domain", "label"],
-        "agreement": ["agreement"],
-    }
 
     rows = []
-    for group_type, columns in groupings.items():
-        if columns:
-            # A single column is passed as a scalar so group keys are scalars, not 1-tuples.
-            by = columns[0] if len(columns) == 1 else columns
-            test_groups = test.groupby(by, sort=True).indices
-            calibration_sizes = calibration.groupby(by).size()
-        else:
-            test_groups = {"all": np.arange(len(test))}
-            calibration_sizes = pd.Series({"all": len(calibration)})
+    for group_type in group_types or list(GROUP_TYPES):
+        calibration_codes, test_codes, names = group_codes(calibration, test, GROUP_TYPES[group_type])
+        calibration_sizes = np.bincount(calibration_codes, minlength=len(names))
+        summaries = summarize_codes(matrix, labels, test_codes, len(names))
 
-        for group, index in test_groups.items():
-            n_calibration = int(calibration_sizes.get(group, 0))
-            band_low, band_high = reference_band(n_calibration, len(index), alpha)
-            group_name = "|".join(str(part) for part in group) if isinstance(group, tuple) else str(group)
+        for group, name in enumerate(names):
+            if summaries[group]["n"] == 0:
+                continue
+            band_low, band_high = reference_band(int(calibration_sizes[group]), summaries[group]["n"], alpha)
             rows.append({
                 "group_type": group_type,
-                "group": group_name,
-                "n_calibration": n_calibration,
+                "group": str(name),
+                "n_calibration": int(calibration_sizes[group]),
                 "band_low": band_low,
                 "band_high": band_high,
-                **summarize_indicators(indicators.iloc[index], labels[index]),
+                **summaries[group],
             })
 
     return pd.DataFrame(rows)

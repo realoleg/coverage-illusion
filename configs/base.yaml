@@ -82,4 +82,18 @@ conformal:
   # Appendix tie-breaking: U(0, tie_jitter) added to float64 scores, generator seeded by hash(seed, resplit_id).
   tie_jitter: 1.0e-9
 
+evaluation:
+  # Two protocols, always both (author's decision):
+  #   resplit       (main): pool = calibration ∪ test; StratifiedGroupKFold(resplit_folds, shuffle=True,
+  #                 random_state=r) by post_id, stratified by label; fold 0 -> calibration, fold 1 -> test.
+  #   official_test: fixed official test; calibration = bootstrap of calibration posts (with replacement),
+  #                 generator seeded by hash(seed, b, "bootstrap").
+  n_replicates: 1000
+  # Per-group metrics (domain, domain x class, agreement) on the first replicates only.
+  n_group_replicates: 200
+  resplit_folds: 2
+  workers: 6
+  # Full long tables (parquet, gitignored) in <output_dir>/long and <output_dir>/groups; aggregates (CSV) committed.
+  output_dir: "results/evaluation"
+
   
