@@ -1,0 +1,119 @@
+{
+  "dataset": "dreaddit",
+  "model": "tfidf_linear_svm",
+  "seed": 42,
+  "commit": "00e2b21f3205be9ba3cea8152ffce2be0c828bb5",
+  "svm_c": 1.0,
+  "in_conformal": false,
+  "vocabulary_size": 20000,
+  "conditions": [
+    "clean",
+    "head_75",
+    "head_50",
+    "head_25",
+    "tail_75",
+    "tail_50",
+    "tail_25",
+    "del_15",
+    "del_30",
+    "typo_05",
+    "typo_10"
+  ],
+  "n_rows": {
+    "train": 1692,
+    "validation": 422,
+    "calibration": 700,
+    "test": 715
+  },
+  "clean_metrics": {
+    "validation": {
+      "accuracy": 0.7488151658767772,
+      "precision": 0.7377049180327869,
+      "recall": 0.8108108108108109,
+      "f1": 0.7725321888412017,
+      "macro_f1": 0.7460544542089607
+    },
+    "calibration": {
+      "accuracy": 0.7328571428571429,
+      "precision": 0.732824427480916,
+      "recall": 0.7783783783783784,
+      "f1": 0.7549148099606815,
+      "macro_f1": 0.7306756153414082
+    },
+    "test": {
+      "accuracy": 0.7230769230769231,
+      "precision": 0.7186700767263428,
+      "recall": 0.7615176151761518,
+      "f1": 0.7394736842105263,
+      "macro_f1": 0.7219756480754124
+    }
+  },
+  "total_seconds": 3.0,
+  "started_at": "2026-10-02T02:55:48+04:00",
+  "finished_at": "2026-10-02T02:55:51+04:00",
+  "versions": {
+    "python": "3.11.15",
+    "platform": "macOS-15.6.1-arm64-arm-64bit",
+    "torch": "2.11.0",
+    "transformers": "5.3.0",
+    "datasets": "4.8.4",
+    "accelerate": "1.13.0",
+    "scikit-learn": "1.8.0",
+    "numpy": "2.4.3",
+    "pandas": "3.0.1",
+    "nltk": "3.10.3"
+  },
+  "config": {
+    "seed": 42,
+    "data": {
+      "name": "dreaddit",
+      "dataset_name": "asmaab/dreaddit",
+      "output_dir": "data/processed",
+      "split": {
+        "n_splits": 20,
+        "train_folds": [
+          0,
+          11
+        ],
+        "validation_folds": [
+          12,
+          14
+        ],
+        "calibration_folds": [
+          15,
+          19
+        ],
+        "random_state": 42,
+        "min_calibration_rows": 650,
+        "min_calibration_rows_per_class": 300
+      }
+    },
+    "baselines": {
+      "max_features": 20000,
+      "ngram_range": [
+        1,
+        2
+      ],
+      "logreg_c_grid": [
+        0.1,
+        0.3,
+        1,
+        3,
+        10
+      ]
+    },
+    "conditions": [
+      "clean",
+      "head_75",
+      "head_50",
+      "head_25",
+      "tail_75",
+      "tail_50",
+      "tail_25",
+      "del_15",
+      "del_30",
+      "typo_05",
+      "typo_10"
+    ]
+  }
+}

@@ -1,0 +1,143 @@
+{
+  "dataset": "dreaddit",
+  "model": "distilbert",
+  "model_name": "distilbert-base-uncased",
+  "seed": 42,
+  "commit": "03562c1d4595c223147dab8499aa37c507ac0489",
+  "device": "mps",
+  "batch_size": 16,
+  "gradient_accumulation_steps": 1,
+  "effective_batch_size": 16,
+  "oom_fallback": false,
+  "pad_to_multiple_of": 64,
+  "torch_empty_cache_steps": 10,
+  "conditions": [
+    "clean",
+    "head_75",
+    "head_50",
+    "head_25",
+    "tail_75",
+    "tail_50",
+    "tail_25",
+    "del_15",
+    "del_30",
+    "typo_05",
+    "typo_10"
+  ],
+  "occlusion": true,
+  "n_rows": {
+    "train": 1692,
+    "calibration": 700,
+    "validation": 422,
+    "test": 715
+  },
+  "clean_metrics": {
+    "validation": {
+      "accuracy": 0.8246445497630331,
+      "precision": 0.7761194029850746,
+      "recall": 0.9369369369369369,
+      "f1": 0.8489795918367347,
+      "macro_f1": 0.8199700219070679
+    },
+    "calibration": {
+      "accuracy": 0.8042857142857143,
+      "precision": 0.765375854214123,
+      "recall": 0.9081081081081082,
+      "f1": 0.830655129789864,
+      "macro_f1": 0.7994223195480623
+    },
+    "test": {
+      "accuracy": 0.7706293706293706,
+      "precision": 0.7194860813704497,
+      "recall": 0.9105691056910569,
+      "f1": 0.8038277511961722,
+      "macro_f1": 0.763866737550948
+    }
+  },
+  "train_seconds": 297.4,
+  "epoch_seconds": [
+    89.4,
+    90.6,
+    92.0
+  ],
+  "total_seconds": 456.3,
+  "started_at": "2026-10-02T03:33:47+04:00",
+  "finished_at": "2026-10-02T03:41:23+04:00",
+  "versions": {
+    "python": "3.11.15",
+    "platform": "macOS-15.6.1-arm64-arm-64bit",
+    "torch": "2.11.0",
+    "transformers": "5.3.0",
+    "datasets": "4.8.4",
+    "accelerate": "1.13.0",
+    "scikit-learn": "1.8.0",
+    "numpy": "2.4.3",
+    "pandas": "3.0.1",
+    "nltk": "3.10.3"
+  },
+  "config": {
+    "data": {
+      "name": "dreaddit",
+      "dataset_name": "asmaab/dreaddit",
+      "output_dir": "data/processed",
+      "split": {
+        "n_splits": 20,
+        "train_folds": [
+          0,
+          11
+        ],
+        "validation_folds": [
+          12,
+          14
+        ],
+        "calibration_folds": [
+          15,
+          19
+        ],
+        "random_state": 42,
+        "min_calibration_rows": 650,
+        "min_calibration_rows_per_class": 300
+      }
+    },
+    "encoders": {
+      "models": {
+        "distilbert": "distilbert-base-uncased",
+        "roberta": "roberta-base",
+        "mentalroberta": "mental/mental-roberta-base"
+      },
+      "seeds": [
+        13,
+        42,
+        101,
+        2024,
+        7777
+      ],
+      "max_length": 512,
+      "batch_size": 16,
+      "gradient_accumulation_steps": 1,
+      "torch_empty_cache_steps": 10,
+      "pad_to_multiple_of": 64,
+      "learning_rate": 2e-05,
+      "num_train_epochs": 3,
+      "weight_decay": 0.01,
+      "warmup_ratio": 0.1,
+      "occlusion_models": [
+        "distilbert",
+        "roberta"
+      ]
+    },
+    "conditions": [
+      "clean",
+      "head_75",
+      "head_50",
+      "head_25",
+      "tail_75",
+      "tail_50",
+      "tail_25",
+      "del_15",
+      "del_30",
+      "typo_05",
+      "typo_10"
+    ]
+  }
+}
